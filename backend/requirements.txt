@@ -6,8 +6,10 @@ psycopg2-binary
 pydantic-settings
 python-jose[cryptography]
 passlib[bcrypt]
+bcrypt<4.0  # passlib 1.7.4는 bcrypt>=4의 백엔드 감지와 호환되지 않음 (https://github.com/pyca/bcrypt/issues/684)
 apscheduler
 pandas
 numpy
 websockets
 httpx
+email-validator

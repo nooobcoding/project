@@ -1,8 +1,8 @@
 """FastAPI 앱 진입점.
 
-헬스체크 라우터와 coins 동기화 잡(00-overview.md 7장 로드맵 0번) 기동 훅을 갖는다.
-기능별 라우터는 routers/ 아래에 추가되는 대로 여기서 include_router로 연결한다
-(docs/02-coding-conventions.md 6장 프로젝트 구조 참고).
+헬스체크·인증(01-auth) 라우터와 coins 동기화 잡(00-overview.md 7장 로드맵 0번)
+기동 훅을 갖는다. 기능별 라우터는 routers/ 아래에 추가되는 대로 여기서
+include_router로 연결한다 (docs/02-coding-conventions.md 6장 프로젝트 구조 참고).
 """
 
 import logging
@@ -12,6 +12,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI
 
+from app.routers import auth
 from app.services.coin_sync import sync_coins
 
 logger = logging.getLogger(__name__)
@@ -38,6 +39,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="코인 자동매매 프로그램 API", lifespan=lifespan)
+app.include_router(auth.router)
 
 
 @app.get("/health")

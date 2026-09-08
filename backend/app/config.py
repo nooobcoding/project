@@ -14,6 +14,7 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+psycopg2://localhost:5432/coin_autotrading"
     jwt_secret_key: str = "change-me-in-env"
+    jwt_algorithm: str = "HS256"
     jwt_access_token_expire_hours: int = 24  # 01-auth.md — Access Token 만료 24시간
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
