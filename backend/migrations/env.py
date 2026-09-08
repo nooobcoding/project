@@ -24,11 +24,9 @@ config.set_main_option("sqlalchemy.url", settings.database_url)
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# 로드맵 0번에서 app/models/*에 SQLAlchemy 모델(01-erd.md 테이블당 1개)이 추가되면
-# 여기서 Base.metadata를 임포트해 autogenerate가 동작하도록 연결한다.
-# from app.models import Base
-# target_metadata = Base.metadata
-target_metadata = None
+from app.models import Base  # noqa: E402
+
+target_metadata = Base.metadata
 
 # other values from the config, defined by the needs of env.py,
 # can be acquired:
