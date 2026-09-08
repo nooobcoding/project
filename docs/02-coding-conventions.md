@@ -164,3 +164,24 @@ docs: 06-backtesting 봉단위 상한 표 추가
 금액(`NUMERIC(20,4)`)·수량(`NUMERIC(28,8)`) 컬럼은 JS `number`의 부동소수점 오차를 피하기 위해 **API 응답에서 문자열로 받고, 화면 표시 직전에만 포매팅한다** ([01-erd.md](01-erd.md) 3.6절의 "문자열로 저장" 원칙을 프론트까지 연장). 값 자체로 계산이 필요한 경우 `decimal.js` 등 라이브러리 사용을 권장한다(도구를 강제하지는 않으므로 팀 판단에 따름).
 
 `frontend/src/types/`의 타입은 [01-erd.md](01-erd.md) 2장 테이블 정의와 1:1로 대응시켜, 스키마가 바뀌면 이 타입부터 갱신한다.
+
+---
+
+## 10. 아키텍처 계층 (Boundary-Control-Entity)
+
+클래스를 Boundary(경계)/Control(제어)/Entity(엔티티) 세 계층으로 나누고, §6의 폴더가 각 계층에 대응한다.
+
+| 계층 | 폴더/대상 | 역할 |
+|---|---|---|
+| Boundary | `routers/`, 외부 연동 클라이언트(예: `UpbitApiClient`, `UpbitWebSocketClient`) | 사용자 요청·외부 시스템과의 접점. 입력을 Control로 전달하고 결과를 반환만 함 |
+| Control | `services/`, `strategy_engine/` | 비즈니스 로직·흐름 제어. 여러 Entity를 조합해 무엇을 어떤 순서로 할지 결정 |
+| Entity | `models/` | [01-erd.md](01-erd.md) 테이블과 1:1 대응하는 SQLAlchemy 모델. 상태와 자기 자신에 관한 단순 로직만 가짐 |
+
+**통신 규칙 (강제)**:
+- **Boundary → Control만** 호출한다. 라우터에서 `models/`를 import 하거나 `Session`으로 직접 쿼리하지 않는다 — 반드시 `services/` 함수를 거친다.
+- Control은 Boundary·Entity 양쪽과 통신할 수 있다.
+- Entity끼리는 서로 참조할 수 있지만(예: SQLAlchemy relationship), Boundary와는 직접 통신하지 않는다.
+
+**코드 리뷰 체크포인트**: PR에 라우터 파일이 포함되면 그 파일에 `from app.models import`가 있는지 확인한다 — 있다면 해당 로직을 `services/`로 옮겨야 한다는 신호다.
+
+**`schemas/`(Pydantic 요청/응답 모델)의 위치**: 이 3분류에 정확히 속하지 않는다. Boundary 계층의 입출력 계약(DTO)으로 취급하며, `models/`(Entity)와 필드가 비슷해도 별개 클래스로 유지한다 (Entity와 혼용 금지).
