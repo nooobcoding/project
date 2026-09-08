@@ -146,7 +146,20 @@ docs: 06-backtesting 봉단위 상한 표 추가
 
 ---
 
-## 8. TypeScript 타입 ↔ ERD 대응 규칙
+## 8. 브랜치 전략
+
+**GitHub Flow**를 따른다 — 정식 배포 주기가 없는 학부 졸프이므로 `develop`/`release`/`hotfix`를 두는 Git Flow는 과한 구조다.
+
+- **`main`**: 항상 기동 가능한 상태로 유지한다. 직접 커밋하지 않고 PR을 통해서만 병합한다.
+- **작업 브랜치 명명**: `type/설명` — `type`은 위 7장 커밋 컨벤션과 동일한 `feat`/`fix`/`docs`/`refactor`/`test`/`chore`.
+  - 로드맵 기능 단위 작업은 `feat/NN-기능명` 형태로, [00-overview.md](00-overview.md) 7장 로드맵 번호와 `docs/features/` 파일 번호를 그대로 쓴다 (예: `feat/00-bootstrap`, `feat/01-auth`, `feat/03-manual-trading` — `09-execution-engine`은 03과 함께 구현하므로 같은 브랜치에 포함).
+  - 그 외 작업은 `fix/설명`, `docs/설명`, `chore/설명`.
+- **병합**: PR 생성 → 팀원 최소 1인 리뷰 → **Squash merge**로 `main`에 병합해 기능 하나당 히스토리 1커밋으로 유지. 병합 후 브랜치는 삭제한다.
+- **release/hotfix 브랜치는 두지 않는다.** 문제가 생기면 `main`에서 바로 `fix/` 브랜치를 딴다.
+
+---
+
+## 9. TypeScript 타입 ↔ ERD 대응 규칙
 
 금액(`NUMERIC(20,4)`)·수량(`NUMERIC(28,8)`) 컬럼은 JS `number`의 부동소수점 오차를 피하기 위해 **API 응답에서 문자열로 받고, 화면 표시 직전에만 포매팅한다** ([01-erd.md](01-erd.md) 3.6절의 "문자열로 저장" 원칙을 프론트까지 연장). 값 자체로 계산이 필요한 경우 `decimal.js` 등 라이브러리 사용을 권장한다(도구를 강제하지는 않으므로 팀 판단에 따름).
 
