@@ -1,0 +1,5 @@
+/* 00-overview.md 6장 원칙 6 — 다크 모드 기반 UI. 화면 구현 시 배경 #1E1E1C, 포인트 컬러 #1D9E75로 확정 */
+body {
+  margin: 0;
+  font-family: system-ui, sans-serif;
+}
