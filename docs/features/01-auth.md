@@ -94,6 +94,7 @@ balances
 | POST | `/api/auth/register` | 계정 생성 + `balances` 초기화 + 토큰 발급 |
 | POST | `/api/auth/login` | 로그인 + 토큰 발급 |
 | POST | `/api/auth/logout` | 서버는 JWT를 무상태(stateless)로 검증하므로 폐기할 서버 측 상태가 없다. 이 엔드포인트는 감사 로그용이며, 실제 로그아웃 처리는 클라이언트가 `localStorage`/`sessionStorage`의 토큰을 삭제하는 것으로 완료된다 |
+| GET | `/api/auth/check-email?email=` | (신규) 회원가입 이메일 입력 blur 시 중복 여부 검증. `{ "available": boolean }` 반환 |
 
 ---
 

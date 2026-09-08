@@ -1,20 +1,28 @@
 """01-auth Boundary 계층 — /api/auth/*. Control(services/auth.py)만 호출한다."""
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import EmailStr
 from sqlalchemy.orm import Session
 
 from app.database import get_session
-from app.schemas.auth import LoginRequest, RegisterRequest, TokenResponse
+from app.schemas.auth import EmailAvailabilityResponse, LoginRequest, RegisterRequest, TokenResponse
 from app.services.auth import (
     EmailAlreadyExistsError,
     InvalidCredentialsError,
     authenticate_user,
     create_access_token,
     get_current_user,
+    get_user_by_email,
     register_user,
 )
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+
+
+@router.get("/check-email", response_model=EmailAvailabilityResponse)
+def check_email(email: EmailStr, db: Session = Depends(get_session)) -> EmailAvailabilityResponse:
+    """01-auth.md 3장 — 회원가입 이메일 입력 blur 시 중복 여부 검증."""
+    return EmailAvailabilityResponse(available=get_user_by_email(db, email) is None)
 
 
 @router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)

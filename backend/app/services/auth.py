@@ -43,10 +43,13 @@ def create_access_token(user_id: int) -> str:
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
 
+def get_user_by_email(db: Session, email: str) -> User | None:
+    return db.scalar(select(User).where(User.email == email))
+
+
 def register_user(db: Session, email: str, password: str) -> User:
     """계정 생성 + 초기 시드머니 지급 (01-auth.md 5장)."""
-    existing = db.scalar(select(User).where(User.email == email))
-    if existing is not None:
+    if get_user_by_email(db, email) is not None:
         raise EmailAlreadyExistsError()
 
     user = User(email=email, password_hash=hash_password(password))
@@ -65,7 +68,7 @@ def register_user(db: Session, email: str, password: str) -> User:
 
 
 def authenticate_user(db: Session, email: str, password: str) -> User:
-    user = db.scalar(select(User).where(User.email == email))
+    user = get_user_by_email(db, email)
     if user is None or not verify_password(password, user.password_hash):
         raise InvalidCredentialsError()
     return user
