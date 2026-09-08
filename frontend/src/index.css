@@ -1,5 +1,191 @@
-/* 00-overview.md 6장 원칙 6 — 다크 모드 기반 UI. 화면 구현 시 배경 #1E1E1C, 포인트 컬러 #1D9E75로 확정 */
+/* 00-overview.md 6장 원칙 6 — 다크 모드 기반 UI. 배경 #1E1E1C, 포인트 컬러 #1D9E75 */
+:root {
+  --bg: #1e1e1c;
+  --surface: #2a2a27;
+  --border: #3d3d3a;
+  --text: #ededea;
+  --text-muted: #9a9a96;
+  --accent: #1d9e75;
+  --accent-hover: #24b787;
+  --error: #e5484d;
+}
+
+* {
+  box-sizing: border-box;
+}
+
 body {
   margin: 0;
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--text);
   font-family: system-ui, sans-serif;
+}
+
+.page-shell {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 48px 24px;
+}
+
+/* SCR-01 — 로그인/회원가입 (docs/features/01-auth.md) */
+
+.auth-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.auth-split {
+  display: flex;
+  gap: 24px;
+  width: 100%;
+  max-width: 880px;
+}
+
+@media (max-width: 720px) {
+  .auth-split {
+    flex-direction: column;
+  }
+}
+
+.auth-panel {
+  flex: 1;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 32px;
+}
+
+.auth-form h2 {
+  margin: 0 0 20px;
+  font-size: 1.25rem;
+}
+
+.auth-field {
+  margin-bottom: 16px;
+}
+
+.auth-field label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 0.875rem;
+  color: var(--text-muted);
+}
+
+.auth-input {
+  width: 100%;
+  padding: 10px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 1rem;
+}
+
+.auth-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.auth-input.has-error {
+  border-color: var(--error);
+}
+
+.auth-password-row {
+  display: flex;
+  gap: 8px;
+}
+
+.auth-password-row .auth-input {
+  flex: 1;
+}
+
+.auth-password-toggle {
+  padding: 0 12px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.auth-password-toggle:hover {
+  color: var(--text);
+}
+
+.auth-error-message {
+  margin: 6px 0 0;
+  font-size: 0.8125rem;
+  color: var(--error);
+}
+
+.auth-hint {
+  margin: 6px 0 0;
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+
+.auth-checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 20px;
+  font-size: 0.875rem;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.auth-button {
+  width: 100%;
+  padding: 12px;
+  background: var(--accent);
+  border: none;
+  border-radius: 8px;
+  color: #fff;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.auth-button:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.auth-button:disabled {
+  background: var(--border);
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+.auth-switch-link {
+  margin: 16px 0 0;
+  font-size: 0.875rem;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.auth-switch-link a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.auth-switch-link a:hover {
+  text-decoration: underline;
+}
+
+.auth-toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 12px 20px;
+  background: var(--surface);
+  border: 1px solid var(--error);
+  border-radius: 8px;
+  color: var(--text);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
 }
