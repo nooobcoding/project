@@ -18,6 +18,7 @@ export interface Order {
   fee: string;
   trigger_price: string | null;
   trigger_direction: TriggerDirection | null;
+  strategy_slot_id: number | null;
   created_at: string;
   filled_at: string | null;
 }

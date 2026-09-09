@@ -120,6 +120,8 @@ def delete_order(
 def get_orders(
     status: str = Query("pending"),
     coin_symbol: str | None = Query(None),
+    source: str | None = Query(None),
+    strategy_slot_id: int | None = Query(None),
     db: Session = Depends(get_session),
     current_user=Depends(get_current_user),
 ) -> list[OrderResponse]:
@@ -127,7 +129,13 @@ def get_orders(
         orders = list_pending_orders(db, current_user.id)
     elif status == "history":
         symbol = coin_symbol.upper() if coin_symbol else None
-        orders = list_order_history(db, current_user.id, coin_symbol=symbol)
+        orders = list_order_history(
+            db,
+            current_user.id,
+            coin_symbol=symbol,
+            source=source,
+            strategy_slot_id=strategy_slot_id,
+        )
     else:
         raise HTTPException(
             status_code=http_status.HTTP_400_BAD_REQUEST, detail="지원하지 않는 status 값입니다."

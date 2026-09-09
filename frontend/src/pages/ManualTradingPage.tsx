@@ -15,6 +15,7 @@ import { useOrderBook } from "../hooks/useOrderBook";
 import { useOrderHistory } from "../hooks/useOrderHistory";
 import { useOrders } from "../hooks/useOrders";
 import { usePriceStream } from "../hooks/usePriceStream";
+import { useStrategySlots } from "../hooks/useStrategySlots";
 import type { CandleInterval } from "../types/candles";
 
 const SELECTED_COIN_STORAGE_KEY = "coin_autotrading_trade_selected_coin";
@@ -61,6 +62,10 @@ export function ManualTradingPage() {
   const { orders, submitOrder, cancelOrder } = useOrders();
   const { balance, refresh: refreshBalance } = useAvailableBalance(selectedSymbol);
   const { history } = useOrderHistory(selectedSymbol);
+  // 07-auto-trading.md 5장 FR-M10 — 활성 자동매매 슬롯이 있는 코인은 주문 패널을 잠근다.
+  // 미체결 취소(PendingOrdersList)는 잠금과 무관하게 항상 가능하므로 그쪽엔 전달하지 않는다.
+  const { lockedCoinSymbols } = useStrategySlots();
+  const isSelectedCoinLocked = selectedSymbol !== null && lockedCoinSymbols.includes(selectedSymbol);
 
   const pendingOrdersForSymbol = orders.filter((order) => order.coin_symbol === selectedSymbol);
 
@@ -107,6 +112,7 @@ export function ManualTradingPage() {
               onPriceChange={setOrderPrice}
               onSubmit={submitOrder}
               onSuccess={handleOrderSuccess}
+              isLocked={isSelectedCoinLocked}
             />
             <TransactionHistoryPanel history={history} />
             <PendingOrdersList orders={pendingOrdersForSymbol} onCancel={handleCancel} />

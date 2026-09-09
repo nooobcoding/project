@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 import { AuthProvider } from "./components/AuthProvider";
 import { ProtectedRoute } from "./components/ProtectedRoute";
+import { AutoTradingPage } from "./pages/AutoTradingPage";
 import { DashboardPage } from "./pages/DashboardPage";
 import { DepositWithdrawPage } from "./pages/DepositWithdrawPage";
 import { LoginPage } from "./pages/LoginPage";
@@ -17,6 +18,7 @@ function App() {
         <Route element={<ProtectedRoute />}>
           <Route path="/dashboard" element={<DashboardPage />} />
           <Route path="/trade" element={<ManualTradingPage />} />
+          <Route path="/auto" element={<AutoTradingPage />} />
           <Route path="/deposit-withdraw" element={<DepositWithdrawPage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Route>

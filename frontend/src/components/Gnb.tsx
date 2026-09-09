@@ -14,7 +14,7 @@ interface NavItem {
 const NAV_ITEMS: NavItem[] = [
   { label: "대시보드", path: "/dashboard", isBuilt: true },
   { label: "수동매매", path: "/trade", isBuilt: true },
-  { label: "자동매매", path: "/auto", isBuilt: false },
+  { label: "자동매매", path: "/auto", isBuilt: true },
   { label: "백테스팅", path: "/backtest", isBuilt: false },
   { label: "포트폴리오", path: "/portfolio", isBuilt: false },
   { label: "입출금", path: "/deposit-withdraw", isBuilt: true },

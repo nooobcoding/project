@@ -13,7 +13,7 @@ from sqlalchemy import select
 from app.database import session_scope
 from app.models import Notification, Order
 from app.services.matcher import _format_quantity
-from app.services.orders import create_order
+from app.services.orders import create_order, list_order_history
 from tests.conftest import load_slot_state, requires_db
 
 PRICE = Decimal("100000")
@@ -162,6 +162,43 @@ def test_auto_sell_notification_is_exit_type(make_slot, test_user, test_coin, se
             )
         )
     assert types == ["signal", "exit"]
+
+
+@requires_db
+def test_list_order_history_filters_by_source_and_slot(make_slot, test_user, test_coin, set_price):
+    """07-auto-trading.md 3-B "자동매매 체결 내역" — source=auto·슬롯 단위 필터가 매수/매도
+    이력을 섞지 않고 정확히 걸러내는지 확인."""
+    slot_id = make_slot()
+    set_price(PRICE)
+    _auto_order(test_user, test_coin, slot_id, "buy", Decimal("1"))
+
+    # 수동 주문은 FR-M10에 걸리므로(활성 슬롯이 있는 코인) 슬롯을 잠시 꺼서 만든다 —
+    # 이 테스트는 필터링만 검증하면 되고 잠금 자체는 다른 테스트가 이미 다룬다.
+    with session_scope() as db:
+        from app.models import StrategySlot
+
+        db.get(StrategySlot, slot_id).is_active = False
+        db.flush()
+        create_order(
+            db,
+            user_id=test_user,
+            coin_symbol=test_coin,
+            side="buy",
+            order_type="market",
+            quantity=Decimal("1"),
+            source="manual",
+        )
+
+    with session_scope() as db:
+        auto_sources = [o.source for o in list_order_history(db, test_user, source="auto")]
+        by_slot_ids = [
+            o.strategy_slot_id for o in list_order_history(db, test_user, strategy_slot_id=slot_id)
+        ]
+        all_count = len(list_order_history(db, test_user))
+
+    assert auto_sources == ["auto"]
+    assert by_slot_ids == [slot_id]
+    assert all_count == 2
 
 
 @requires_db

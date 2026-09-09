@@ -245,12 +245,25 @@ def list_pending_orders(db: Session, user_id: int) -> list[Order]:
 
 
 def list_order_history(
-    db: Session, user_id: int, coin_symbol: str | None = None, limit: int = 50
+    db: Session,
+    user_id: int,
+    coin_symbol: str | None = None,
+    source: str | None = None,
+    strategy_slot_id: int | None = None,
+    limit: int = 50,
 ) -> list[Order]:
-    """체결·취소된 최근 주문 목록 (거래내역 탭)."""
+    """체결·취소된 최근 주문 목록 (거래내역 탭, 07-auto-trading.md 3-B 자동매매 체결 내역).
+
+    source="auto"로 필터하면 07-auto-trading 체결 내역이, strategy_slot_id를 더하면
+    슬롯 단위 필터가 된다 (07-auto-trading.md 3-B "슬롯별 필터 가능").
+    """
     conditions = [Order.user_id == user_id, Order.status.in_(["filled", "canceled"])]
     if coin_symbol is not None:
         conditions.append(Order.coin_symbol == coin_symbol)
+    if source is not None:
+        conditions.append(Order.source == source)
+    if strategy_slot_id is not None:
+        conditions.append(Order.strategy_slot_id == strategy_slot_id)
     return list(
         db.scalars(
             select(Order).where(*conditions).order_by(Order.created_at.desc()).limit(limit)
