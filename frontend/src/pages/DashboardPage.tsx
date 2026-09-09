@@ -7,12 +7,11 @@ import { CoinPriceList } from "../components/dashboard/CoinPriceList";
 import { CoinTabSelector } from "../components/dashboard/CoinTabSelector";
 import { RecentTradesList } from "../components/dashboard/RecentTradesList";
 import { ShortcutChips } from "../components/dashboard/ShortcutChips";
-import { TopBar } from "../components/dashboard/TopBar";
 import { WebSocketStatusBanner } from "../components/dashboard/WebSocketStatusBanner";
 import { useDashboardSummary } from "../hooks/useDashboardSummary";
 import { useRecentTrades } from "../hooks/useRecentTrades";
+import { usePriceStream } from "../hooks/usePriceStream";
 import { useWatchlist } from "../hooks/useWatchlist";
-import { useWatchlistPrices } from "../hooks/useWatchlistPrices";
 
 export function DashboardPage() {
   const { summary, isLoading: isSummaryLoading } = useDashboardSummary();
@@ -21,12 +20,11 @@ export function DashboardPage() {
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
 
   const watchlistSymbols = useMemo(() => items.map((item) => item.coin_symbol), [items]);
-  const { prices, status } = useWatchlistPrices(watchlistSymbols);
+  const { prices, status } = usePriceStream(watchlistSymbols);
   const selectedTick = selectedSymbol ? prices[selectedSymbol] ?? null : null;
 
   return (
     <div className="dashboard-page">
-      <TopBar />
       <div className="dashboard-grid">
         <div className="dashboard-column">
           <AssetSummaryCard summary={summary} isLoading={isSummaryLoading} />
@@ -45,7 +43,7 @@ export function DashboardPage() {
             onSelect={selectSymbol}
             onAddClick={() => setIsAddModalOpen(true)}
           />
-          <CandleChart symbol={selectedSymbol} tick={selectedTick} />
+          <CandleChart symbol={selectedSymbol} tick={selectedTick} interval="1d" />
           <AutoTradingStatusCard />
         </div>
         <div className="dashboard-column">

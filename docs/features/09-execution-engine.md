@@ -1,6 +1,6 @@
 # 09. 체결 엔진 (공용 인프라)
 
-**상태**: 설계완료 · 구현 전
+**상태**: 구현중 (코드 작성 완료, 로컬 DB 마이그레이션·수동 검증 대기)
 **화면 ID**: 없음 — 화면을 갖지 않는 백엔드 공용 인프라 문서
 **의존성**: `02-dashboard`(시세 스트림 캐시), `03-manual-trading`(`orders` 생성 로직)
 **연관 문서**: [00-overview.md](../00-overview.md) 3장(아키텍처), [01-erd.md](../01-erd.md) 3.1~3.2절, `03-manual-trading`, `07-auto-trading`
@@ -18,7 +18,7 @@
 ## 2. 트리거 위치
 
 ```
-backend/execution/matcher.py
+backend/app/services/matcher.py  (구현 시 02-coding-conventions.md 6장 구조에 맞춰 services/ 아래에 둠)
   ← Upbit 시세 스트림 핸들러(02-dashboard에서 구현하는 시세 캐시 갱신 지점)에서 호출
      심볼 X의 현재가 갱신 이벤트 수신
        → orders WHERE coin_symbol=X AND status='pending' AND order_type='limit' 조회

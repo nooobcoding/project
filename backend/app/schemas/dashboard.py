@@ -25,8 +25,6 @@ class WatchlistCreateRequest(BaseModel):
 
 
 class RecentTradeResponse(BaseModel):
-    """03-manual-trading 완료 전까지 목록은 항상 비어 있다 (02-dashboard.md 5장)."""
-
     side: str
     coin_symbol: str
     price: str

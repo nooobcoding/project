@@ -16,7 +16,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.routers import auth, candles, dashboard, prices
+from app.routers import auth, candles, coins, dashboard, orderbook, orders, prices
 from app.services.coin_sync import sync_coins
 from app.services.price_stream import run_price_stream
 
@@ -63,6 +63,9 @@ app.include_router(auth.router)
 app.include_router(dashboard.router)
 app.include_router(prices.router)
 app.include_router(candles.router)
+app.include_router(coins.router)
+app.include_router(orders.router)
+app.include_router(orderbook.router)
 
 
 @app.get("/health")

@@ -190,36 +190,102 @@ body {
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
 }
 
-/* SCR-02 — 대시보드 (docs/features/02-dashboard.md) */
+/* 공용 GNB (00-overview.md 6장 원칙 6 — 화면마다 새로 그리지 않고 공통 고정) */
 
-.dashboard-page {
+.app-shell {
   min-height: 100vh;
-  padding-bottom: 32px;
 }
 
-.dashboard-topbar {
+.gnb {
+  position: sticky;
+  top: 0;
+  z-index: 10;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 16px 24px;
+  gap: 24px;
+  padding: 14px 24px;
+  background: var(--surface);
   border-bottom: 1px solid var(--border);
 }
 
-.dashboard-topbar-title {
-  font-weight: 600;
+.gnb-logo {
+  font-weight: 700;
+  white-space: nowrap;
 }
 
-.dashboard-logout-button {
+.gnb-nav {
+  display: flex;
+  gap: 4px;
+  flex: 1;
+  flex-wrap: wrap;
+}
+
+.gnb-link {
+  padding: 8px 12px;
+  border-radius: 8px;
+  color: var(--text-muted);
+  text-decoration: none;
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+
+.gnb-link:hover {
+  color: var(--text);
+}
+
+.gnb-link.is-active {
+  color: var(--text);
+  background: var(--bg);
+}
+
+.gnb-link.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.gnb-link.is-disabled:hover {
+  color: var(--text-muted);
+}
+
+.gnb-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.gnb-icon-button {
+  padding: 6px 10px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 1rem;
+  cursor: pointer;
+}
+
+.gnb-icon-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.gnb-logout-button {
   padding: 8px 16px;
   background: transparent;
   border: 1px solid var(--border);
   border-radius: 8px;
   color: var(--text);
   cursor: pointer;
+  white-space: nowrap;
 }
 
-.dashboard-logout-button:hover {
+.gnb-logout-button:hover {
   border-color: var(--accent);
+}
+
+/* SCR-02 — 대시보드 (docs/features/02-dashboard.md) */
+
+.dashboard-page {
+  min-height: 100vh;
+  padding-bottom: 32px;
 }
 
 .dashboard-grid {
@@ -487,4 +553,339 @@ body {
   justify-content: flex-end;
   gap: 8px;
   margin-top: 16px;
+}
+
+/* SCR-03 — 수동 매매 (docs/features/03-manual-trading.md) */
+
+.trade-grid {
+  display: grid;
+  grid-template-columns: 200px 1fr 180px;
+  gap: 16px;
+  padding: 24px 24px 0;
+  align-items: start;
+}
+
+@media (max-width: 1200px) {
+  .trade-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.trade-order-form-row,
+.trade-history-row {
+  padding: 16px 24px 0;
+}
+
+.trade-history-row {
+  padding-bottom: 24px;
+}
+
+.trade-column {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.trade-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.trade-coin-list-panel {
+  max-height: calc(100vh - 120px);
+  overflow-y: auto;
+}
+
+.trade-coin-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.trade-coin-list-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 6px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.trade-coin-list-item:hover {
+  background: var(--bg);
+}
+
+.trade-coin-list-item.is-selected {
+  background: var(--bg);
+  border: 1px solid var(--accent);
+}
+
+.trade-coin-list-name {
+  display: flex;
+  flex-direction: column;
+  font-size: 0.8125rem;
+}
+
+.trade-coin-list-symbol {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+.trade-coin-list-price {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  font-size: 0.8125rem;
+}
+
+.trade-price-large {
+  margin: 0;
+  font-size: 2rem;
+  font-weight: 700;
+}
+
+.trade-price-info-row {
+  display: flex;
+  gap: 16px;
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+
+.trade-pending-order-item {
+  display: grid;
+  grid-template-columns: auto 1fr 1fr 1fr auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+
+.trade-pending-order-item:first-child {
+  border-top: none;
+}
+
+.trade-orderbook-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.trade-orderbook-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.trade-orderbook-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 3px 6px;
+  font-size: 0.75rem;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.trade-orderbook-row:hover {
+  background: var(--bg);
+}
+
+.trade-orderbook-row.is-ask {
+  color: #4d8de5;
+}
+
+.trade-orderbook-row.is-bid {
+  color: var(--error);
+}
+
+.trade-orderbook-current-price {
+  text-align: center;
+  padding: 8px 0;
+  font-weight: 700;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  margin: 4px 0;
+}
+
+/* 매수/매도 폼 — 3열 그리드 밖 전체 폭 가로 바 (04-settings 이전까지는 03 화면 전용) */
+.trade-order-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 20px;
+  padding: 16px 20px;
+}
+
+.trade-order-bar-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.trade-order-bar-inputs {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 12px;
+  flex: 2 1 360px;
+}
+
+.trade-order-bar-inputs .order-field {
+  flex: 1 1 140px;
+  min-width: 120px;
+}
+
+.trade-order-bar-summary {
+  flex: 1 1 200px;
+  min-width: 180px;
+}
+
+.trade-order-tab-row {
+  display: flex;
+  gap: 8px;
+}
+
+.trade-order-tab {
+  flex: 1;
+  padding: 10px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.trade-order-tab.is-buy.is-active {
+  border-color: var(--error);
+  color: var(--error);
+}
+
+.trade-order-tab.is-sell.is-active {
+  border-color: #4d8de5;
+  color: #4d8de5;
+}
+
+.order-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.order-field label {
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+
+.order-number-input-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0 12px;
+}
+
+.order-number-input {
+  flex: 1;
+  min-width: 0;
+  padding: 10px 0;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font-size: 1rem;
+}
+
+.order-number-input:focus {
+  outline: none;
+}
+
+.order-number-input:disabled {
+  color: var(--text-muted);
+}
+
+.order-number-input.has-error {
+  color: var(--error);
+}
+
+.order-number-input-suffix {
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+}
+
+.trade-order-ratio-row {
+  display: flex;
+  gap: 6px;
+  padding-top: 22px; /* 옆 그룹의 label 높이만큼 내려서 인풋 줄과 맞춘다 */
+}
+
+.trade-order-ratio-row .dashboard-chip-button {
+  min-width: 44px;
+  padding: 6px 10px;
+  text-align: center;
+}
+
+.trade-order-amount-row,
+.trade-order-balance-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+
+.trade-submit-button {
+  align-self: flex-end;
+  width: 140px;
+}
+
+.trade-history-panel {
+  min-width: 0;
+}
+
+.trade-history-item {
+  display: grid;
+  grid-template-columns: auto 1fr 1fr 1fr auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+  font-size: 0.8125rem;
+}
+
+.trade-history-item:first-child {
+  border-top: none;
+}
+
+.trade-history-status.is-canceled {
+  color: var(--text-muted);
+}
+
+.trade-history-time {
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.trade-submit-button.is-buy {
+  background: var(--error);
+}
+
+.trade-submit-button.is-buy:hover:not(:disabled) {
+  background: #f26066;
+}
+
+.trade-submit-button.is-sell {
+  background: #4d8de5;
+}
+
+.trade-submit-button.is-sell:hover:not(:disabled) {
+  background: #6ba1ec;
 }
