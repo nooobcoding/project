@@ -15,6 +15,7 @@ from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.config import settings
 from app.routers import auth, dashboard, prices
 from app.services.coin_sync import sync_coins
 from app.services.price_stream import run_price_stream
@@ -49,10 +50,10 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="코인 자동매매 프로그램 API", lifespan=lifespan)
 
-# 프론트엔드 Vite 개발 서버(기본 5173)에서의 요청 허용
+# 허용 origin은 배포 환경마다 다르므로 설정값(CORS_ALLOWED_ORIGINS)에서 가져온다 (app/config.py)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=settings.cors_allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

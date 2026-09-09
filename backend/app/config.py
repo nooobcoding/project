@@ -4,6 +4,7 @@ docs/00-overview.md 2장 기술 스택(PostgreSQL, JWT) 및 01-erd.md 전제 값
 """
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import field_validator
 
 
 class Settings(BaseSettings):
@@ -16,6 +17,16 @@ class Settings(BaseSettings):
     jwt_secret_key: str = "change-me-in-env"
     jwt_algorithm: str = "HS256"
     jwt_access_token_expire_hours: int = 24  # 01-auth.md — Access Token 만료 24시간
+    # 배포 환경마다 프론트 origin이 다르므로 하드코딩하지 않는다. .env의
+    # CORS_ALLOWED_ORIGINS(콤마 구분)로 덮어쓴다 — 기본값은 로컬 개발용.
+    cors_allowed_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
+
+    @field_validator("cors_allowed_origins", mode="before")
+    @classmethod
+    def _split_cors_origins(cls, value: str | list[str]) -> list[str]:
+        if isinstance(value, str):
+            return [origin.strip() for origin in value.split(",") if origin.strip()]
+        return value
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
