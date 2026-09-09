@@ -27,6 +27,7 @@ from app.routers import (
     orderbook,
     orders,
     prices,
+    wallet,
 )
 from app.services.coin_sync import sync_coins
 from app.services.price_stream import run_price_stream
@@ -80,6 +81,7 @@ app.include_router(orderbook.router)
 app.include_router(account.router)
 app.include_router(notification_settings.router)
 app.include_router(notifications.router)
+app.include_router(wallet.router)
 
 
 @app.get("/health")
