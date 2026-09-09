@@ -1,17 +1,61 @@
-import { useAuth } from "../hooks/useAuth";
+import { useMemo, useState } from "react";
+import { AddCoinModal } from "../components/dashboard/AddCoinModal";
+import { AssetSummaryCard } from "../components/dashboard/AssetSummaryCard";
+import { AutoTradingStatusCard } from "../components/dashboard/AutoTradingStatusCard";
+import { CoinPriceList } from "../components/dashboard/CoinPriceList";
+import { CoinTabSelector } from "../components/dashboard/CoinTabSelector";
+import { PriceLineChart } from "../components/dashboard/PriceLineChart";
+import { RecentTradesList } from "../components/dashboard/RecentTradesList";
+import { ShortcutChips } from "../components/dashboard/ShortcutChips";
+import { TopBar } from "../components/dashboard/TopBar";
+import { WebSocketStatusBanner } from "../components/dashboard/WebSocketStatusBanner";
+import { useDashboardSummary } from "../hooks/useDashboardSummary";
+import { useRecentTrades } from "../hooks/useRecentTrades";
+import { useWatchlist } from "../hooks/useWatchlist";
+import { useWatchlistPrices } from "../hooks/useWatchlistPrices";
 
-// 로드맵 2번(대시보드)에서 실제 화면으로 대체될 임시 셸.
-// 지금은 인증 흐름(01-auth) 검증용 목적지 역할만 한다.
 export function DashboardPage() {
-  const { logout } = useAuth();
+  const { summary, isLoading: isSummaryLoading } = useDashboardSummary();
+  const { items, selectedSymbol, selectSymbol, addItem, removeItem } = useWatchlist();
+  const { trades, isLoading: isTradesLoading } = useRecentTrades();
+  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+
+  const watchlistSymbols = useMemo(() => items.map((item) => item.coin_symbol), [items]);
+  const { prices, status } = useWatchlistPrices(watchlistSymbols);
+  const selectedTick = selectedSymbol ? prices[selectedSymbol] ?? null : null;
 
   return (
-    <div className="page-shell">
-      <h1>대시보드</h1>
-      <p>로그인에 성공했습니다.</p>
-      <button className="auth-button" onClick={logout}>
-        로그아웃
-      </button>
+    <div className="dashboard-page">
+      <TopBar />
+      <div className="dashboard-grid">
+        <div className="dashboard-column">
+          <AssetSummaryCard summary={summary} isLoading={isSummaryLoading} />
+          <CoinPriceList
+            items={items}
+            prices={prices}
+            onAddClick={() => setIsAddModalOpen(true)}
+            onRemove={removeItem}
+          />
+          <WebSocketStatusBanner status={status} />
+        </div>
+        <div className="dashboard-column">
+          <CoinTabSelector
+            items={items}
+            selectedSymbol={selectedSymbol}
+            onSelect={selectSymbol}
+            onAddClick={() => setIsAddModalOpen(true)}
+          />
+          <PriceLineChart symbol={selectedSymbol} tick={selectedTick} />
+          <AutoTradingStatusCard />
+        </div>
+        <div className="dashboard-column">
+          <RecentTradesList trades={trades} isLoading={isTradesLoading} />
+          <ShortcutChips />
+        </div>
+      </div>
+      {isAddModalOpen && (
+        <AddCoinModal onClose={() => setIsAddModalOpen(false)} onSubmit={addItem} />
+      )}
     </div>
   );
 }

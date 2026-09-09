@@ -189,3 +189,302 @@ body {
   color: var(--text);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
 }
+
+/* SCR-02 — 대시보드 (docs/features/02-dashboard.md) */
+
+.dashboard-page {
+  min-height: 100vh;
+  padding-bottom: 32px;
+}
+
+.dashboard-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--border);
+}
+
+.dashboard-topbar-title {
+  font-weight: 600;
+}
+
+.dashboard-logout-button {
+  padding: 8px 16px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.dashboard-logout-button:hover {
+  border-color: var(--accent);
+}
+
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+  padding: 24px;
+}
+
+@media (max-width: 960px) {
+  .dashboard-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.dashboard-column {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.dashboard-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+}
+
+.dashboard-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.dashboard-card-label {
+  margin: 0 0 4px;
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+
+.dashboard-asset-total {
+  margin: 0;
+  font-size: 1.75rem;
+  font-weight: 700;
+}
+
+.dashboard-profit-pct {
+  margin: 4px 0 16px;
+  font-size: 0.875rem;
+  color: var(--text-muted);
+}
+
+/* 02-dashboard.md 2-A — 상승 녹색/하락 빨간색 */
+.dashboard-profit-pct.is-positive {
+  color: var(--accent);
+}
+
+.dashboard-profit-pct.is-negative {
+  color: var(--error);
+}
+
+.dashboard-mini-cards {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.dashboard-mini-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.dashboard-empty-text {
+  margin: 0;
+  font-size: 0.875rem;
+  color: var(--text-muted);
+}
+
+.dashboard-chip-button {
+  padding: 6px 12px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text);
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+
+.dashboard-chip-button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.dashboard-chip-button:disabled {
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+.dashboard-price-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.dashboard-price-list-item {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+
+.dashboard-price-list-item:first-child {
+  border-top: none;
+}
+
+.dashboard-coin-symbol {
+  font-weight: 600;
+}
+
+/* 02-dashboard.md 2-A — 주요 코인 시세 목록: 상승 녹색/하락 빨간색 */
+.is-positive {
+  color: var(--accent);
+}
+
+.is-negative {
+  color: var(--error);
+}
+
+.dashboard-remove-button {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 1rem;
+}
+
+.dashboard-remove-button:hover {
+  color: var(--error);
+}
+
+.dashboard-tab-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.dashboard-tab {
+  padding: 8px 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.dashboard-tab.is-active {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.dashboard-tab-add {
+  color: var(--accent);
+}
+
+.dashboard-chart-container {
+  width: 100%;
+  height: 280px;
+}
+
+.dashboard-chart-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 280px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--text-muted);
+  font-size: 0.875rem;
+}
+
+.dashboard-trade-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.dashboard-trade-list-item {
+  display: grid;
+  grid-template-columns: auto 1fr 1fr 1fr;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+
+.dashboard-trade-list-item:first-child {
+  border-top: none;
+}
+
+.dashboard-trade-badge {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  width: fit-content;
+}
+
+.dashboard-trade-badge.is-buy {
+  background: rgba(229, 72, 77, 0.15);
+  color: var(--error);
+}
+
+.dashboard-trade-badge.is-sell {
+  background: rgba(77, 141, 229, 0.15);
+  color: #4d8de5;
+}
+
+.dashboard-shortcut-chips {
+  display: flex;
+  gap: 12px;
+}
+
+.dashboard-ws-caption {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.dashboard-ws-banner {
+  padding: 10px 16px;
+  background: rgba(229, 72, 77, 0.15);
+  border: 1px solid var(--error);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 0.8125rem;
+}
+
+.dashboard-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.dashboard-modal {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px;
+  width: 320px;
+}
+
+.dashboard-modal h3 {
+  margin: 0 0 16px;
+}
+
+.dashboard-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
