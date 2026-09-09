@@ -27,7 +27,7 @@ class Notification(Base):
     message: Mapped[str] = mapped_column(Text, nullable=False)
     coin_symbol: Mapped[str | None] = mapped_column(String(10), ForeignKey("coins.symbol"), nullable=True)
     strategy_slot_id: Mapped[int | None] = mapped_column(
-        BigInteger, ForeignKey("strategy_slots.id"), nullable=True
+        BigInteger, ForeignKey("strategy_slots.id", ondelete="SET NULL"), nullable=True
     )
     is_read: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

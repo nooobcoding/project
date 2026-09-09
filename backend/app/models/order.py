@@ -54,8 +54,10 @@ class Order(Base):
     # (services/matcher.py run_matching_for_symbol의 승격 단계 참고).
     trigger_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
     trigger_direction: Mapped[str | None] = mapped_column(String(7), nullable=True)
+    # 슬롯이 삭제돼도 체결 기록 자체는 남아야 하므로(잔고 이력의 근거·08-portfolio 거래내역)
+    # 연결만 끊는다 (ON DELETE SET NULL).
     strategy_slot_id: Mapped[int | None] = mapped_column(
-        BigInteger, ForeignKey("strategy_slots.id"), nullable=True
+        BigInteger, ForeignKey("strategy_slots.id", ondelete="SET NULL"), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     filled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

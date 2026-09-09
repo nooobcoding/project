@@ -225,7 +225,7 @@ erDiagram
 | quantity | NUMERIC(28,8) | NOT NULL | |
 | status | VARCHAR(8) | CHECK IN ('pending','filled','canceled') | |
 | source | VARCHAR(6) | CHECK IN ('manual','auto') | |
-| strategy_slot_id | BIGINT | FK → strategy_slots.id, NULL 허용 | auto 체결일 때만 값 존재. **(03 구현 시 실제 DB엔 이 컬럼을 아직 추가하지 않음** — `strategy_slots` 테이블이 없어 FK 대상이 없으므로. 07 구현 시 컬럼·FK·인덱스를 함께 추가한다. 그 전까지 이 표는 목표 스키마이며 실제 `orders` 테이블과 다르다) |
+| strategy_slot_id | BIGINT | FK → strategy_slots.id **ON DELETE SET NULL**, NULL 허용 | auto 체결일 때만 값 존재. 슬롯이 삭제되면 연결만 끊고 체결 기록은 남긴다 — 주문은 잔고 이력의 근거이자 `08-portfolio` 거래내역이라 슬롯과 함께 지울 수 없다. (07 구현 중 이 FK를 RESTRICT로 두면 한 번이라도 거래한 슬롯을 삭제할 수 없어 `DELETE /api/strategy-slots/{id}`가 실패하는 것을 발견해 SET NULL로 확정) |
 | realized_profit | NUMERIC(20,4) | NULL 허용 | (신규) `side='sell'`이 체결될 때, 체결 직전 `holdings.avg_buy_price` 기준 실현손익을 계산해 기록. 매수 행과 미체결 행은 NULL |
 | fee | NUMERIC(20,4) | NOT NULL DEFAULT 0 | (신규) 체결 수수료(원화). pending 동안 0, 체결 시 확정. 계산 규칙은 3.2절 |
 | trigger_price | NUMERIC(20,8) | NULL 허용 | (신규) 예약가 주문의 감시가격. `order_type='reserved'`가 아니면 항상 NULL |
@@ -284,7 +284,7 @@ erDiagram
 | type | VARCHAR(8) | CHECK IN ('signal','exit','error') | |
 | message | TEXT | NOT NULL | |
 | coin_symbol | VARCHAR(10) | FK → coins.symbol, NULL 허용 | |
-| strategy_slot_id | BIGINT | FK → strategy_slots.id, NULL 허용 | (신규) 어느 슬롯이 발생시켰는지 추적용 |
+| strategy_slot_id | BIGINT | FK → strategy_slots.id **ON DELETE SET NULL**, NULL 허용 | (신규) 어느 슬롯이 발생시켰는지 추적용. `orders.strategy_slot_id`와 같은 이유로 슬롯 삭제 시 연결만 끊는다 |
 | is_read | BOOLEAN | NOT NULL DEFAULT false | GNB 배지 카운트 소스 |
 | created_at | TIMESTAMPTZ | NOT NULL | |
 

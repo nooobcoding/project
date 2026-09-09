@@ -14,7 +14,16 @@ from sqlalchemy.orm import Session
 
 from app.constants import TRADING_FEE_RATE
 from app.database import session_scope
-from app.models import Balance, Holding, Order
+from app.models import (
+    Balance,
+    Coin,
+    Holding,
+    Notification,
+    NotificationSetting,
+    Order,
+    StrategySlot,
+)
+from app.services import slot_state
 
 
 def _calculate_fee(price: Decimal, quantity: Decimal) -> Decimal:
@@ -80,14 +89,86 @@ def _apply_balance(db: Session, order: Order) -> None:
     balance.updated_at = datetime.now(timezone.utc)
 
 
-def _apply_auto_trading_hook(db: Session, order: Order) -> None:
-    """source='auto' 체결의 notifications/strategy_slots.state 갱신 지점.
+def _notification_enabled(settings: NotificationSetting | None, type_: str) -> bool:
+    """알림 종류별 수신 설정 (04-settings). 설정 행이 없으면 컬럼 기본값과 동일하게 전부 허용한다.
 
-    07-auto-trading 미구현 상태라 source는 항상 'manual'이다. 07 구현 시
-    09-execution-engine.md 3.2절 5단계(알림 적재 + state.position 갱신)를 여기에 채운다.
+    services/notification_settings.py의 get_or_create_settings를 쓰지 않는 이유: 그 함수는
+    내부에서 commit을 하는데, 이 훅은 fill_order의 트랜잭션 한가운데서 돌기 때문에 여기서
+    커밋이 일어나면 체결이 미완성 상태로 확정돼 버린다.
     """
-    if order.source != "auto":
+    if settings is None:
+        return True
+    if type_ == "signal":
+        return settings.signal_enabled
+    if type_ == "exit":
+        return settings.exit_enabled
+    return settings.error_enabled
+
+
+def _format_quantity(quantity: Decimal) -> str:
+    """코인 수량 표시 — 의미 없는 뒤쪽 0을 없앤다.
+
+    `normalize()`만 쓰면 정수 수량이 지수 표기(1E+2)가 되므로 고정소수점 포맷을 함께 쓴다.
+    """
+    return f"{quantity.normalize():f}"
+
+
+def _build_fill_message(order: Order, korean_name: str) -> str:
+    """체결 알림 문구. 워커가 왜 팔았는지(손절/익절/신호)는 이 훅이 알 수 없으므로 추측하지 않고,
+    실제로 아는 사실(체결 수량·가격·실현손익)만 적는다. 화면의 익절(파랑)/손절(빨강) 구분은
+    realized_profit 부호로 판단한다 (07-auto-trading.md 3-C)."""
+    quantity = _format_quantity(order.quantity)
+    if order.side == "buy":
+        return f"[{korean_name}] 자동매수 체결 — {quantity} 개 / {order.price:,.0f}원"
+
+    profit = order.realized_profit if order.realized_profit is not None else Decimal(0)
+    return f"[{korean_name}] 자동매도 체결 — {quantity} 개 / 실현손익 {profit:+,.0f}원"
+
+
+def _apply_auto_trading_hook(db: Session, order: Order) -> None:
+    """source='auto' 체결의 strategy_slots.state.position 갱신 + 알림 적재
+    (09-execution-engine.md 3.2절 5단계).
+
+    **이 함수가 state.position을 쓰는 유일한 주체다** (07-auto-trading.md 4장). 워커는 신호를
+    내고 주문을 요청할 뿐 포지션을 직접 쓰지 않는다. 갱신은 fill_order의 트랜잭션 안에서
+    일어나므로 체결·잔고·보유수량과 원자적으로 함께 확정된다 — 그래서 여기서 별도 세션을 열거나
+    커밋하지 않는다.
+    """
+    if order.source != "auto" or order.strategy_slot_id is None:
         return
+
+    slot = db.get(StrategySlot, order.strategy_slot_id)
+    if slot is None:
+        # 체결 직전에 슬롯이 삭제된 경우. 체결 자체는 유효하므로 되돌리지 않고, 인계할
+        # 포지션 주체가 사라졌으니 그 코인은 수동 보유분으로 남는다 (07-auto-trading.md 4.2절).
+        return
+
+    position = slot_state.read_position(slot.state)
+    if order.side == "buy":
+        new_position = slot_state.apply_buy(
+            position, order.price, order.quantity, TRADING_FEE_RATE, order.filled_at
+        )
+    else:
+        new_position = slot_state.apply_sell(position, order.quantity)
+    slot_state.write_position(db, slot.id, new_position)
+
+    notification_type = "signal" if order.side == "buy" else "exit"
+    settings = db.get(NotificationSetting, order.user_id)
+    if not _notification_enabled(settings, notification_type):
+        return
+
+    coin = db.get(Coin, order.coin_symbol)
+    db.add(
+        Notification(
+            user_id=order.user_id,
+            type=notification_type,
+            message=_build_fill_message(order, coin.korean_name if coin else order.coin_symbol),
+            coin_symbol=order.coin_symbol,
+            strategy_slot_id=slot.id,
+            is_read=False,
+            created_at=datetime.now(timezone.utc),
+        )
+    )
 
 
 def fill_order(db: Session, order: Order, fill_price: Decimal) -> bool:
