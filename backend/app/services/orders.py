@@ -85,6 +85,16 @@ def get_available_quantity(db: Session, user_id: int, coin_symbol: str) -> Decim
     return quantity - locked
 
 
+def _active_slot_for_coin(db: Session, user_id: int, coin_symbol: str) -> StrategySlot | None:
+    return db.scalar(
+        select(StrategySlot).where(
+            StrategySlot.user_id == user_id,
+            StrategySlot.coin_symbol == coin_symbol,
+            StrategySlot.is_active,
+        )
+    )
+
+
 def create_order(
     db: Session,
     user_id: int,
@@ -118,15 +128,16 @@ def create_order(
     if order_type == "reserved" and (trigger_price is None or trigger_price <= 0):
         raise InvalidOrderInputError()
 
-    if source == "manual":
-        locked = db.scalar(
-            select(StrategySlot).where(
-                StrategySlot.user_id == user_id,
-                StrategySlot.coin_symbol == coin_symbol,
-                StrategySlot.is_active,
-            )
-        )
-        if locked is not None:
+    # 매수 주문의 FR-M10 잠금 체크는 balances 잠금 "뒤"에 한다 (side 분기 이후 참고) — 여기서
+    # 미리 하면 toggle_slot(ON)이 같은 balances 행을 잠그는 동안 이 체크가 먼저 끝나(TOCTOU)
+    # 슬롯이 막 활성화된 순간의 코인을 수동 매수로 슬쩍 통과시킬 수 있다. 매도는 holdings를
+    # 잠그는데, 여기에 balances 잠금까지 더하면 fill_order가 암묵적으로 holdings→balances
+    # 순서로 잠그는 것과 반대 순서(balances→holdings)가 되어 교착 가능성이 생기므로 매도는
+    # 이 잠금 순서 정렬을 적용하지 않는다 — 매도 쪽은 슬롯이 활성화되는 바로 그 순간과 겹치는
+    # 아주 좁은 창에서만 잠금이 새어나갈 수 있는 채로 남지만, 워커의 청산 로직이 어차피
+    # min(포지션, 가용수량)으로 과매도를 막고 있어 자금 안전에는 영향이 없다.
+    if source == "manual" and side == "sell":
+        if _active_slot_for_coin(db, user_id, coin_symbol) is not None:
             raise CoinLockedByAutoTradingError()
 
     trigger_direction: str | None = None
@@ -159,6 +170,14 @@ def create_order(
         # 체결 쪽은 이미 fill_order의 조건부 UPDATE로 안전하지만, 이 생성 단계는 그렇지
         # 않았다. 잠금은 이 트랜잭션이 커밋/롤백될 때(바로 아래 db.commit()) 풀린다.
         db.execute(select(Balance).where(Balance.user_id == user_id).with_for_update())
+
+        # FR-M10 체크를 이 잠금 "뒤"에 한다 — toggle_slot(ON)도 같은 balances 행을 잠그므로,
+        # 두 요청이 겹치면 뒤에 도착한 쪽이 여기서 블록되었다가 앞선 쪽이 커밋한 뒤에야
+        # 최신 활성 슬롯 상태를 보게 된다 (위 모듈 상단 주석 참고).
+        if source == "manual":
+            if _active_slot_for_coin(db, user_id, coin_symbol) is not None:
+                raise CoinLockedByAutoTradingError()
+
         required = effective_price * quantity * (1 + TRADING_FEE_RATE)
         if required > get_available_krw(db, user_id):
             raise InsufficientBalanceError()

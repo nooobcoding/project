@@ -128,6 +128,20 @@ def create_slot(
     return slot
 
 
+def _has_duplicate_active_slot(db: Session, user_id: int, coin_symbol: str, exclude_slot_id: int) -> bool:
+    return (
+        db.scalar(
+            select(StrategySlot).where(
+                StrategySlot.user_id == user_id,
+                StrategySlot.coin_symbol == coin_symbol,
+                StrategySlot.is_active,
+                StrategySlot.id != exclude_slot_id,
+            )
+        )
+        is not None
+    )
+
+
 def _get_owned_slot(db: Session, user_id: int, slot_id: int) -> StrategySlot:
     slot = db.get(StrategySlot, slot_id)
     if slot is None or slot.user_id != user_id:
@@ -195,21 +209,19 @@ def toggle_slot(db: Session, user_id: int, slot_id: int, is_active: bool) -> Str
     if slot.is_active:
         return slot  # 이미 ON — 멱등하게 처리
 
-    duplicate = db.scalar(
-        select(StrategySlot).where(
-            StrategySlot.user_id == user_id,
-            StrategySlot.coin_symbol == slot.coin_symbol,
-            StrategySlot.is_active,
-            StrategySlot.id != slot.id,
-        )
-    )
-    if duplicate is not None:
-        raise DuplicateActiveSlotError()
-
-    # 동시에 여러 슬롯을 ON하는 요청이 겹쳐도 출금 가능액 계산이 서로의 변경을 못 보고
-    # 함께 통과하지 않도록 balances 행을 잠근다 (01-erd.md 3.1절 동시성 주의,
-    # services/orders.py create_order의 FOR UPDATE 패턴과 동일).
+    # 잠금을 "중복 슬롯 검사보다 먼저" 건다 — 같은 유저가 같은 코인의 서로 다른 슬롯 두 개를
+    # 동시에 ON 요청하면, 잠금 없이 각자 중복 검사만 하는 순서로는 둘 다 "아직 활성 슬롯 없음"을
+    # 보고 통과해버릴 수 있다(TOCTOU). 그러면 뒤늦게 부분 유니크 인덱스(ux_strategy_slots_active_
+    # coin)가 커밋 시점에 막긴 하지만, 그건 이 함수가 잡지 못하는 raw IntegrityError로 터진다 —
+    # 사용자에게 "이미 활성화된 전략이 있습니다"가 아니라 500이 뜬다. balances 행을 먼저 잠그면
+    # 두 번째 요청은 첫 번째가 커밋할 때까지 여기서 블록되고, 그 뒤에 하는 중복 검사는 첫 번째의
+    # 결과를 정확히 보게 된다 — 이 잠금은 출금 가능액 재검증(아래)에도 어차피 필요했던 것이라
+    # 새 잠금 자원을 추가하는 게 아니라 기존 잠금의 순서만 바꾼 것이다 (01-erd.md 3.1절 동시성
+    # 주의, services/orders.py create_order의 FOR UPDATE 패턴과 동일 자원).
     db.execute(select(Balance).where(Balance.user_id == user_id).with_for_update())
+
+    if _has_duplicate_active_slot(db, user_id, slot.coin_symbol, exclude_slot_id=slot.id):
+        raise DuplicateActiveSlotError()
     if slot.invest_amount > get_withdrawable_krw(db, user_id):
         raise InsufficientAllocatableBalanceError()
 
