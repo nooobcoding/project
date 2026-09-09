@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { CandleChart } from "../components/dashboard/CandleChart";
 import { CoinListPanel } from "../components/manual-trading/CoinListPanel";
@@ -31,20 +31,26 @@ export function ManualTradingPage() {
     () => symbolFromParams ?? localStorage.getItem(SELECTED_COIN_STORAGE_KEY),
   );
 
+  const selectSymbol = useCallback(
+    (symbol: string) => {
+      setSelectedSymbol(symbol);
+      setOrderPrice("");
+      localStorage.setItem(SELECTED_COIN_STORAGE_KEY, symbol);
+      setSearchParams({ symbol }, { replace: true });
+    },
+    [setSearchParams],
+  );
+
   useEffect(() => {
     // 목록이 아직 없거나(최초 로딩) 선택된 심볼이 목록에 없으면(상장폐지 등) 첫 항목으로 보정한다.
+    // selectSymbol을 거쳐야 localStorage·URL도 같이 갱신되어, 다음 방문 때 다시
+    // 임의의 첫 코인으로 되돌아가지 않는다 (기존엔 setSelectedSymbol만 호출해 보정 결과가
+    // 저장되지 않았고, 재방문 시 매번 이 보정 로직이 다시 타면서 다른 코인이 뽑힐 수 있었다).
     if (coins.length === 0) return;
     if (!selectedSymbol || !coins.some((coin) => coin.symbol === selectedSymbol)) {
-      setSelectedSymbol(coins[0].symbol);
+      selectSymbol(coins[0].symbol);
     }
-  }, [coins, selectedSymbol]);
-
-  const selectSymbol = (symbol: string) => {
-    setSelectedSymbol(symbol);
-    setOrderPrice("");
-    localStorage.setItem(SELECTED_COIN_STORAGE_KEY, symbol);
-    setSearchParams({ symbol }, { replace: true });
-  };
+  }, [coins, selectedSymbol, selectSymbol]);
 
   const allSymbols = useMemo(() => coins.map((coin) => coin.symbol), [coins]);
   const { prices } = usePriceStream(allSymbols);
@@ -75,37 +81,37 @@ export function ManualTradingPage() {
   return (
     <div className="dashboard-page">
       <div className="trade-grid">
+        <div className="trade-column">
+          <PriceHeaderPanel coin={selectedCoin} tick={selectedTick} />
+          <IntervalTabs interval={candleInterval} onChange={setCandleInterval} />
+          <CandleChart symbol={selectedSymbol} tick={selectedTick} interval={candleInterval} />
+        </div>
         <CoinListPanel
           coins={coins}
           prices={prices}
           selectedSymbol={selectedSymbol}
           onSelect={selectSymbol}
         />
-        <div className="trade-column">
-          <PriceHeaderPanel coin={selectedCoin} tick={selectedTick} />
-          <IntervalTabs interval={candleInterval} onChange={setCandleInterval} />
-          <CandleChart symbol={selectedSymbol} tick={selectedTick} interval={candleInterval} />
-          <PendingOrdersList orders={pendingOrdersForSymbol} onCancel={handleCancel} />
+        <div className="trade-order-row">
+          <OrderBookPanel
+            orderBook={orderBook}
+            currentPrice={selectedTick?.trade_price ?? null}
+            onLevelClick={(clickedPrice) => setOrderPrice(String(clickedPrice))}
+          />
+          <div className="trade-order-column">
+            <OrderFormPanel
+              symbol={selectedSymbol}
+              currentPrice={selectedTick?.trade_price ?? null}
+              availableBalance={balance}
+              price={orderPrice}
+              onPriceChange={setOrderPrice}
+              onSubmit={submitOrder}
+              onSuccess={handleOrderSuccess}
+            />
+            <TransactionHistoryPanel history={history} />
+            <PendingOrdersList orders={pendingOrdersForSymbol} onCancel={handleCancel} />
+          </div>
         </div>
-        <OrderBookPanel
-          orderBook={orderBook}
-          currentPrice={selectedTick?.trade_price ?? null}
-          onLevelClick={(clickedPrice) => setOrderPrice(String(clickedPrice))}
-        />
-      </div>
-      <div className="trade-order-form-row">
-        <OrderFormPanel
-          symbol={selectedSymbol}
-          currentPrice={selectedTick?.trade_price ?? null}
-          availableBalance={balance}
-          price={orderPrice}
-          onPriceChange={setOrderPrice}
-          onSubmit={submitOrder}
-          onSuccess={handleOrderSuccess}
-        />
-      </div>
-      <div className="trade-history-row">
-        <TransactionHistoryPanel history={history} />
       </div>
       {toastMessage && <Toast message={toastMessage} onDismiss={() => setToastMessage(null)} />}
     </div>

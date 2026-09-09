@@ -25,7 +25,7 @@ export function Gnb() {
 
   return (
     <header className="gnb">
-      <span className="gnb-logo">코인 자동매매</span>
+      <span className="gnb-logo">Gazua</span>
       <nav className="gnb-nav">
         {NAV_ITEMS.map((item) =>
           item.isBuilt ? (

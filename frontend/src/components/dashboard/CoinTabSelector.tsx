@@ -1,15 +1,13 @@
 import type { WatchlistItem } from "../../types/dashboard";
 
-const MAX_WATCHLIST_SIZE = 5;
-
 interface CoinTabSelectorProps {
   items: WatchlistItem[];
   selectedSymbol: string | null;
   onSelect: (symbol: string) => void;
-  onAddClick: () => void;
 }
 
-export function CoinTabSelector({ items, selectedSymbol, onSelect, onAddClick }: CoinTabSelectorProps) {
+// 관심 코인 추가는 CoinPriceList의 AddCoinSearch로 일원화되어 있다 (중복 버튼 제거).
+export function CoinTabSelector({ items, selectedSymbol, onSelect }: CoinTabSelectorProps) {
   return (
     <div className="dashboard-tab-row">
       {items.map((item) => (
@@ -21,11 +19,6 @@ export function CoinTabSelector({ items, selectedSymbol, onSelect, onAddClick }:
           {item.coin_symbol}
         </button>
       ))}
-      {items.length < MAX_WATCHLIST_SIZE && (
-        <button className="dashboard-tab dashboard-tab-add" onClick={onAddClick}>
-          + 추가
-        </button>
-      )}
     </div>
   );
 }

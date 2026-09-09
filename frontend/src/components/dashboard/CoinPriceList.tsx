@@ -1,26 +1,28 @@
+import type { Coin } from "../../types/coins";
 import type { PriceTick, WatchlistItem } from "../../types/dashboard";
+import { AddCoinSearch } from "./AddCoinSearch";
 
 const MAX_WATCHLIST_SIZE = 5;
 
 interface CoinPriceListProps {
   items: WatchlistItem[];
   prices: Record<string, PriceTick>;
-  onAddClick: () => void;
+  coins: Coin[];
+  onAdd: (symbol: string) => Promise<void>;
   onRemove: (symbol: string) => void;
 }
 
-export function CoinPriceList({ items, prices, onAddClick, onRemove }: CoinPriceListProps) {
+export function CoinPriceList({ items, prices, coins, onAdd, onRemove }: CoinPriceListProps) {
   return (
     <div className="dashboard-card">
       <div className="dashboard-card-header">
         <p className="dashboard-card-label">주요 코인 시세</p>
-        <button
-          className="dashboard-chip-button"
-          onClick={onAddClick}
+        <AddCoinSearch
+          coins={coins}
+          excludeSymbols={items.map((item) => item.coin_symbol)}
           disabled={items.length >= MAX_WATCHLIST_SIZE}
-        >
-          + 추가
-        </button>
+          onAdd={onAdd}
+        />
       </div>
       {items.length === 0 ? (
         <p className="dashboard-empty-text">관심 코인을 추가해주세요.</p>

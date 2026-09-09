@@ -1,11 +1,11 @@
 import { useState } from "react";
 import { Link, Navigate } from "react-router-dom";
-import { LoginForm } from "../components/LoginForm";
+import { RegisterForm } from "../components/RegisterForm";
 import { Toast } from "../components/Toast";
 import { useAuth } from "../hooks/useAuth";
 
-// SCR-01 — 로그인 전용 화면 (01-auth.md 2-A). 회원가입은 /register로 분리.
-export function LoginPage() {
+// SCR-01 — 회원가입 전용 화면 (01-auth.md 2-B). 로그인은 /login으로 분리.
+export function RegisterPage() {
   const { isAuthenticated } = useAuth();
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
@@ -18,9 +18,9 @@ export function LoginPage() {
       <div className="auth-single">
         <p className="auth-brand">Gazua</p>
         <div className="auth-panel">
-          <LoginForm onServerError={setToastMessage} />
+          <RegisterForm onServerError={setToastMessage} />
           <p className="auth-switch-link">
-            계정이 없으신가요? <Link to="/register">회원가입</Link>
+            이미 계정이 있으신가요? <Link to="/login">로그인</Link>
           </p>
         </div>
       </div>

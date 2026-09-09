@@ -25,7 +25,8 @@ function truncate(value: number, decimals: number): number {
 }
 
 // 03-manual-trading.md 2-D — 매수/매도·지정가/시장가/예약가 탭, 콤마 입력, 비율버튼, 잔고 표시.
-// 3열 그리드 밖으로 빠져 전체 폭을 쓰는 가로 바 형태다 (레이아웃 세부는 index.css .trade-order-bar).
+// 호가창 옆(.trade-order-row 우측 열)에 배치된다. 내부는 flex-wrap이라 좁은 폭에서는
+// 필드가 세로로 쌓인다 (레이아웃 세부는 index.css .trade-order-bar).
 export function OrderFormPanel({
   symbol,
   currentPrice,

@@ -13,8 +13,8 @@ import { useAuth } from "../../hooks/useAuth";
 import type { CandleInterval } from "../../types/candles";
 import type { PriceTick } from "../../types/dashboard";
 
-const RISE_COLOR = "#1d9e75";
-const FALL_COLOR = "#e5484d";
+const RISE_COLOR = "#e5484d";
+const FALL_COLOR = "#1d9e75";
 
 // services/candles.py의 _INTERVAL_SECONDS와 1:1 대응 — 실시간 틱을 진행 중인 봉에 합칠 때
 // 어느 시각 구간(bucket)에 속하는지 판단하는 데 쓴다.

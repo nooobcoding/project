@@ -5,6 +5,7 @@ import { DashboardPage } from "./pages/DashboardPage";
 import { DepositWithdrawPage } from "./pages/DepositWithdrawPage";
 import { LoginPage } from "./pages/LoginPage";
 import { ManualTradingPage } from "./pages/ManualTradingPage";
+import { RegisterPage } from "./pages/RegisterPage";
 import { SettingsPage } from "./pages/SettingsPage";
 
 function App() {
@@ -12,6 +13,7 @@ function App() {
     <AuthProvider>
       <Routes>
         <Route path="/login" element={<LoginPage />} />
+        <Route path="/register" element={<RegisterPage />} />
         <Route element={<ProtectedRoute />}>
           <Route path="/dashboard" element={<DashboardPage />} />
           <Route path="/trade" element={<ManualTradingPage />} />
