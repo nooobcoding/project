@@ -1,8 +1,6 @@
 """05-deposit-withdraw Control 계층 — 가상 원화 입금/출금/내역 조회.
 
-get_withdrawable_krw는 01-erd.md 3.1절의 "출금 가능액" 파생식이다. 07-auto-trading이
-아직 없어 활성 슬롯 배정액 차감 항이 존재하지 않으므로, 지금은 가용 원화와 동일하다.
-07 구현 시 strategy_slots.is_active 조건의 배정액 차감을 이 함수에 추가해야 한다.
+get_withdrawable_krw는 01-erd.md 3.1절의 "출금 가능액" 파생식이다.
 """
 
 from datetime import datetime, timezone
@@ -11,7 +9,7 @@ from decimal import Decimal
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import Balance, DepositWithdrawal
+from app.models import Balance, DepositWithdrawal, StrategySlot
 from app.services.orders import get_available_krw
 
 
@@ -24,7 +22,27 @@ class InsufficientWithdrawableError(Exception):
 
 
 def get_withdrawable_krw(db: Session, user_id: int) -> Decimal:
-    return get_available_krw(db, user_id)
+    """출금 가능액 = 가용 원화 − Σ(활성 슬롯의 "남은" 배정액) (01-erd.md 3.1절).
+
+    슬롯이 이미 집행한 금액(state.position 기준 취득원가)은 매수 체결 시점에 이미
+    balances에서 빠져나가 가용 원화 계산에 반영돼 있다. 여기서는 슬롯이 앞으로 더
+    쓸 수 있는 "남은" 배정액(invest_amount − 이미 집행한 금액)만 추가로 차감한다 —
+    이미 집행분까지 또 빼면 이중 차감이 된다.
+    """
+    available = get_available_krw(db, user_id)
+
+    active_slots = db.scalars(
+        select(StrategySlot).where(StrategySlot.user_id == user_id, StrategySlot.is_active)
+    )
+    reserved = Decimal(0)
+    for slot in active_slots:
+        position = slot.state.get("position") if slot.state else None
+        spent = Decimal(position["quantity"]) * Decimal(position["avg_price"]) if position else Decimal(0)
+        remaining = slot.invest_amount - spent
+        if remaining > 0:
+            reserved += remaining
+
+    return available - reserved
 
 
 def get_balance_summary(db: Session, user_id: int) -> tuple[Decimal, Decimal]:

@@ -7,6 +7,7 @@ from app.models.holding import Holding
 from app.models.notification import Notification
 from app.models.notification_setting import NotificationSetting
 from app.models.order import Order
+from app.models.strategy_slot import StrategySlot
 from app.models.user import User
 from app.models.watchlist import Watchlist
 
@@ -20,6 +21,7 @@ __all__ = [
     "Notification",
     "NotificationSetting",
     "Order",
+    "StrategySlot",
     "User",
     "Watchlist",
 ]

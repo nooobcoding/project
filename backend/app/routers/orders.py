@@ -10,6 +10,7 @@ from app.database import get_session
 from app.schemas.orders import OrderCreateRequest, OrderResponse
 from app.services.auth import get_current_user
 from app.services.orders import (
+    CoinLockedByAutoTradingError,
     CoinNotFoundError,
     InsufficientBalanceError,
     InsufficientHoldingError,
@@ -40,6 +41,7 @@ def _to_response(order) -> OrderResponse:
         fee=str(order.fee),
         trigger_price=str(order.trigger_price) if order.trigger_price is not None else None,
         trigger_direction=order.trigger_direction,
+        strategy_slot_id=order.strategy_slot_id,
         created_at=order.created_at,
         filled_at=order.filled_at,
     )
@@ -89,6 +91,11 @@ def post_order(
         raise HTTPException(
             status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="주문 처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.",
+        )
+    except CoinLockedByAutoTradingError:
+        raise HTTPException(
+            status_code=http_status.HTTP_409_CONFLICT,
+            detail="자동매매가 실행 중인 코인입니다. 자동매매를 먼저 종료해주세요.",
         )
     return _to_response(order)
 

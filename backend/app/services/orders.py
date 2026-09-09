@@ -11,7 +11,7 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.constants import TRADING_FEE_RATE
-from app.models import Balance, Coin, Holding, Order
+from app.models import Balance, Coin, Holding, Order, StrategySlot
 from app.services import matcher, price_stream
 
 
@@ -45,6 +45,10 @@ class OrderNotFoundError(Exception):
 
 class OrderNotCancelableError(Exception):
     """이미 체결·취소된 주문을 취소하려는 경우 (동시 체결과 경쟁해 패배한 경우 포함)."""
+
+
+class CoinLockedByAutoTradingError(Exception):
+    """해당 코인에 활성 자동매매 슬롯이 있어 수동 주문이 잠긴 경우 (07-auto-trading.md 5장 FR-M10)."""
 
 
 def get_available_krw(db: Session, user_id: int) -> Decimal:
@@ -91,6 +95,7 @@ def create_order(
     price: Decimal | None = None,
     trigger_price: Decimal | None = None,
     source: str = "manual",
+    strategy_slot_id: int | None = None,
 ) -> Order:
     """주문을 생성한다. 시장가는 같은 트랜잭션 안에서 즉시 체결까지 수행한다
     (09-execution-engine.md 1장 — 시장가는 매칭 큐를 거치지 않는다).
@@ -98,10 +103,11 @@ def create_order(
     예약가(order_type='reserved')는 감시가격(trigger_price) 도달 시 order_type이
     'limit'으로 승격될 뿐, 자체 체결 경로는 갖지 않는다 (services/matcher.py 참고).
 
-    source는 기본값 "manual"만 지금 쓰이지만(03-manual-trading), 07-auto-trading이
-    이 함수를 내부 호출로 재사용할 때 "auto"를 넘길 수 있도록 파라미터로 열어둔다.
-    (strategy_slot_id는 아직 컬럼 자체가 없어 — strategy_slots 테이블 부재, 01-erd.md
-    orders.strategy_slot_id 각주 참고 — 07에서 컬럼과 함께 추가한다.)
+    source="auto"·strategy_slot_id는 07-auto-trading 워커가 이 함수를 내부 호출로 재사용할
+    때 넘긴다 (03-manual-trading.md 1장). source="manual"일 때는 해당 코인에 활성 자동매매
+    슬롯이 있으면 거부한다 — 자동매매가 그 코인의 포지션을 관리하는 도중 수동 주문이 끼어들면
+    슬롯의 state.position과 실제 holdings가 어긋날 수 있기 때문이다(07-auto-trading.md 5장
+    FR-M10). 미체결 주문 취소(cancel_order)는 이 잠금과 무관하게 항상 허용한다.
     """
     coin = db.get(Coin, coin_symbol)
     if coin is None or not coin.is_active:
@@ -111,6 +117,17 @@ def create_order(
         raise InvalidOrderInputError()
     if order_type == "reserved" and (trigger_price is None or trigger_price <= 0):
         raise InvalidOrderInputError()
+
+    if source == "manual":
+        locked = db.scalar(
+            select(StrategySlot).where(
+                StrategySlot.user_id == user_id,
+                StrategySlot.coin_symbol == coin_symbol,
+                StrategySlot.is_active,
+            )
+        )
+        if locked is not None:
+            raise CoinLockedByAutoTradingError()
 
     trigger_direction: str | None = None
     if order_type == "market":
@@ -167,6 +184,7 @@ def create_order(
         fee=Decimal(0),
         trigger_price=trigger_price if order_type == "reserved" else None,
         trigger_direction=trigger_direction,
+        strategy_slot_id=strategy_slot_id,
         created_at=datetime.now(timezone.utc),
     )
     db.add(order)

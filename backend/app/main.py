@@ -27,6 +27,7 @@ from app.routers import (
     orderbook,
     orders,
     prices,
+    strategy_slots,
     wallet,
 )
 from app.services.coin_sync import sync_coins
@@ -82,6 +83,7 @@ app.include_router(account.router)
 app.include_router(notification_settings.router)
 app.include_router(notifications.router)
 app.include_router(wallet.router)
+app.include_router(strategy_slots.router)
 
 
 @app.get("/health")

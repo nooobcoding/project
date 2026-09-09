@@ -1,8 +1,8 @@
 """notifications — 알림 (01-erd.md 2장, 04-settings·07-auto-trading).
 
-strategy_slot_id 컬럼은 strategy_slots 테이블이 아직 없어(07-auto-trading 미구현)
-이 모델에서 생략했다 (models/order.py와 동일한 사유). 07 구현 시 컬럼·FK를 함께 추가한다.
-실제 알림 적재(신호/손절익절/오류 발생 시 insert)도 07 구현 시 붙는다 — 04는 설정 CRUD와
+strategy_slot_id는 07-auto-trading이 발생시킨 알림(신호/손절익절/오류)일 때만 값을 가진다.
+실제 알림 적재는 services/matcher.py `_apply_auto_trading_hook`(체결 이벤트)와
+app/strategy_engine/worker.py(신호·오류 이벤트)가 담당한다 — 04는 설정 CRUD와
 목록 조회/읽음 처리만 다룬다.
 """
 
@@ -26,5 +26,8 @@ class Notification(Base):
     type: Mapped[str] = mapped_column(String(8), nullable=False)
     message: Mapped[str] = mapped_column(Text, nullable=False)
     coin_symbol: Mapped[str | None] = mapped_column(String(10), ForeignKey("coins.symbol"), nullable=True)
+    strategy_slot_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("strategy_slots.id"), nullable=True
+    )
     is_read: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

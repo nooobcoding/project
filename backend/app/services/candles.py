@@ -90,6 +90,20 @@ def _current_bucket_start(interval: Interval, now: datetime) -> datetime:
     return datetime.fromtimestamp(epoch - epoch % seconds, tz=timezone.utc)
 
 
+def get_confirmed_candles(
+    db: Session, symbol: str, interval: Interval, count: int = DEFAULT_CANDLE_COUNT
+) -> list[Candle]:
+    """`get_candles`와 동일하되, 아직 진행 중인(미확정) 마지막 봉을 잘라내고 반환한다.
+
+    07-auto-trading은 확정봉만 신호 판정에 써야 한다(07-auto-trading.md 4장) — 진행 중인
+    봉은 아직 값이 바뀔 수 있어 같은 시각에 여러 번 다른 신호를 낼 수 있기 때문이다.
+    `services/strategy_slots.py`의 신호 미리보기 조회와 07 Step 2B 워커 tick이 함께 쓴다.
+    """
+    fetched = get_candles(db, symbol, interval, count)
+    bucket_start = _current_bucket_start(interval, datetime.now(timezone.utc))
+    return [candle for candle in fetched if candle.opened_at < bucket_start]
+
+
 def get_candles(db: Session, symbol: str, interval: Interval, count: int = DEFAULT_CANDLE_COUNT) -> list[Candle]:
     """`(symbol, interval)`의 최신 `count`개 캔들을 오래된 순으로 반환한다."""
     coin = db.get(Coin, symbol)
