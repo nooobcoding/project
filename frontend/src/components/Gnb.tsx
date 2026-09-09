@@ -1,5 +1,6 @@
 import { NavLink } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
+import { NotificationBell } from "./NotificationBell";
 
 interface NavItem {
   label: string;
@@ -8,7 +9,7 @@ interface NavItem {
 }
 
 // 00-overview.md 6장 원칙 6 — GNB는 화면마다 새로 그리지 않고 공통으로 고정한다.
-// 아직 구현되지 않은 화면(04~08)은 ShortcutChips와 동일하게 비활성 링크로만 노출하고,
+// 아직 구현되지 않은 화면(05~08)은 ShortcutChips와 동일하게 비활성 링크로만 노출하고,
 // 해당 로드맵 항목이 완료되면 isBuilt만 true로 바꾸면 된다.
 const NAV_ITEMS: NavItem[] = [
   { label: "대시보드", path: "/dashboard", isBuilt: true },
@@ -43,19 +44,13 @@ export function Gnb() {
         )}
       </nav>
       <div className="gnb-actions">
-        {/* 04-settings 미구현이라 알림 목록/배지 카운트는 연결하지 않는다.
-            아이콘만 앞당겨 배치하고, 04 완료 후 미확인 배지(01-erd.md notifications.is_read)를 연결한다. */}
-        <button className="gnb-icon-button" disabled title="추후 연동(알림 설정 완료 후)">
-          🔔
-        </button>
-        <span
-          className="gnb-link is-disabled"
-          title="추후 연동"
-          role="link"
-          aria-disabled="true"
+        <NotificationBell />
+        <NavLink
+          to="/settings"
+          className={({ isActive }) => (isActive ? "gnb-link is-active" : "gnb-link")}
         >
           설정
-        </span>
+        </NavLink>
         <button className="gnb-logout-button" onClick={logout}>
           로그아웃
         </button>
