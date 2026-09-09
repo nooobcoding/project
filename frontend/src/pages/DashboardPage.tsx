@@ -2,9 +2,9 @@ import { useMemo, useState } from "react";
 import { AddCoinModal } from "../components/dashboard/AddCoinModal";
 import { AssetSummaryCard } from "../components/dashboard/AssetSummaryCard";
 import { AutoTradingStatusCard } from "../components/dashboard/AutoTradingStatusCard";
+import { CandleChart } from "../components/dashboard/CandleChart";
 import { CoinPriceList } from "../components/dashboard/CoinPriceList";
 import { CoinTabSelector } from "../components/dashboard/CoinTabSelector";
-import { PriceLineChart } from "../components/dashboard/PriceLineChart";
 import { RecentTradesList } from "../components/dashboard/RecentTradesList";
 import { ShortcutChips } from "../components/dashboard/ShortcutChips";
 import { TopBar } from "../components/dashboard/TopBar";
@@ -45,7 +45,7 @@ export function DashboardPage() {
             onSelect={selectSymbol}
             onAddClick={() => setIsAddModalOpen(true)}
           />
-          <PriceLineChart symbol={selectedSymbol} tick={selectedTick} />
+          <CandleChart symbol={selectedSymbol} tick={selectedTick} />
           <AutoTradingStatusCard />
         </div>
         <div className="dashboard-column">

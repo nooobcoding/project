@@ -24,6 +24,7 @@ export interface RecentTrade {
 export interface PriceTick {
   symbol: string;
   trade_price: number;
+  trade_volume: number;
   change: "RISE" | "EVEN" | "FALL";
   signed_change_rate: number;
   prev_closing_price: number;

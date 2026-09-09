@@ -390,14 +390,14 @@ body {
 
 .dashboard-chart-container {
   width: 100%;
-  height: 280px;
+  height: 320px;
 }
 
 .dashboard-chart-empty {
   display: flex;
   align-items: center;
   justify-content: center;
-  height: 280px;
+  height: 320px;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 12px;

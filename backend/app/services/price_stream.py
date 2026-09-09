@@ -56,6 +56,7 @@ def _to_tick(message: dict, symbol: str) -> dict:
     return {
         "symbol": symbol,
         "trade_price": message["trade_price"],
+        "trade_volume": message["trade_volume"],  # 진행 중인 캔들의 거래량 누적용 (02-dashboard 차트)
         "change": message["change"],
         "signed_change_rate": message["signed_change_rate"],
         "prev_closing_price": message["prev_closing_price"],

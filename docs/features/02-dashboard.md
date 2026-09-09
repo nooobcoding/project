@@ -34,7 +34,7 @@
 | 컴포넌트 | 유형 | 설명 |
 |---|---|---|
 | 코인 탭 셀렉터 | Tab | 관심 코인 최대 5개, 선택 상태 유지. 마지막 선택 탭은 저장 컬럼을 두지 않고 **localStorage**에 저장 (스키마 변경 없이 재방문 시 복원) |
-| 1일 시세 라인 차트 | Line Chart | 선택 코인의 1일 가격 흐름, 호버 툴팁 |
+| 일봉 캔들 차트 | Candlestick Chart | 선택 코인의 실 과거 일봉(200개)+거래량. `candles` 테이블(01-erd.md, 원래 03/06 소관)을 앞당겨 구현해 `GET /api/coins/{symbol}/candles?interval=1d`로 조회하고, 당일 봉만 `/ws/prices` 틱으로 실시간 갱신한다. 시간대 탭(1분/10분/30분/1시간)은 넣지 않음 — 03-manual-trading에서 추가 |
 | 자동매매 상태 카드 | Status Card | 활성 슬롯이 있으면 슬롯별 요약(전략명+ON 배지+마지막 신호), 없으면 "운용 중인 자동매매 없음" 안내. 클릭 시 SCR-04로 이동 |
 
 ### 2-C. 우측 — 최근 거래 내역 + 바로가기
@@ -72,6 +72,8 @@ watchlists
 
 `총 평가금액`, `코인 평가액`은 별도 테이블 없이 `holdings` × 실시간 시세로 매 요청 시 계산한다.
 
+일봉 캔들 차트를 위해 `candles`([01-erd.md](../01-erd.md) 2장, 원래 03/06 소관)도 이번에 함께 생성했다 — 스키마는 ERD 그대로이며 02는 `interval='1d'`만 사용한다.
+
 ---
 
 ## 5. API 엔드포인트 (초안)
@@ -84,6 +86,7 @@ watchlists
 | DELETE | `/api/watchlist/{symbol}` | 관심 코인 제거 |
 | GET | `/api/dashboard/recent-trades` | 최근 체결 5건 |
 | WS | `/ws/prices?symbols=...` | 실시간 시세 구독. 백엔드 시세 캐시에서 요청 심볼만 필터링해 전송 — 백엔드의 Upbit 구독 자체는 이 파라미터와 무관하게 KRW 전체 상시 유지된다 ([00-overview.md](../00-overview.md) 3장) |
+| GET | `/api/coins/{symbol}/candles?interval=` | 캔들 조회. [03-manual-trading.md](03-manual-trading.md) 6장에 명세된 경로를 02에서 앞당겨 구현(일봉만 사용) — 03이 그대로 재사용 |
 
 ---
 
