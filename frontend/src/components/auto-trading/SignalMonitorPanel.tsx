@@ -11,6 +11,7 @@ const STRATEGY_TYPE_LABEL: Record<string, string> = {
   trend: "추세추종",
   counter_trend: "역추세",
   grid: "그리드",
+  dca: "DCA",
 };
 
 const INDICATOR_LABEL: Record<string, string> = {

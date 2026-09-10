@@ -15,7 +15,7 @@ from typing import Any, Callable, Literal, Protocol, Sequence
 
 import pandas as pd
 
-from app.strategy_engine import grid, signals
+from app.strategy_engine import dca, grid, signals
 from app.strategy_engine.intents import TradeIntent
 from app.strategy_engine.signals import Signal
 
@@ -91,8 +91,13 @@ def _evaluate_indicator(slot: SlotSpec, candles: Sequence[CandleLike]) -> list[T
     return []
 
 
-def evaluate(slot: SlotSpec, candles: Sequence[CandleLike], now: datetime) -> list[TradeIntent]:
-    """확정봉 시퀀스로 이번에 낼 주문들을 판정한다.
+def evaluate(
+    slot: SlotSpec,
+    candles: Sequence[CandleLike],
+    now: datetime,
+    current_price: Decimal | None = None,
+) -> list[TradeIntent]:
+    """이번에 낼 주문들을 판정한다.
 
     반환이 목록인 이유는 `intents.py` 참고 — 그리드는 가격이 여러 라인을 관통하면 한 번의
     평가에서 여러 주문이 나오고, 전략유형마다 1회 주문 규모의 의미가 달라 금액/수량까지 엔진이
@@ -102,23 +107,31 @@ def evaluate(slot: SlotSpec, candles: Sequence[CandleLike], now: datetime) -> li
         slot: 평가 대상 슬롯 스펙
         candles: 오래된 순으로 정렬된 확정봉 시퀀스. 진행 중인(미확정) 봉은 호출자가 미리
             제외해야 한다 — 07 워커는 시세 스트림상 마지막 봉이 진행 중일 수 있으므로 잘라서
-            넘긴다 (07-auto-trading.md 4장 "확정봉 기준" 규칙).
+            넘긴다 (07-auto-trading.md 4장 "확정봉 기준" 규칙). DCA는 캔들로 트리거하지 않아
+            빈 시퀀스를 받아도 된다.
         now: 평가 시각. DCA의 시간 스케줄 트리거(`state.dca.next_buy_at`) 판정에 쓰인다.
+        current_price: 판정에 쓸 현재가. 생략하면 마지막 확정봉 종가를 쓴다. 07 워커는 실시간
+            시세를 넣고(DCA 추가매수는 매 tick 판정한다), 06 백테스팅은 재생 중인 봉의 종가를
+            넣게 된다.
 
     Returns:
         이번에 낼 주문 의도 목록 (없으면 빈 목록)
     """
+    price = current_price if current_price is not None else (candles[-1].close if candles else None)
+
     if slot.strategy_type == "dca":
-        raise NotImplementedError("DCA는 07 Step 5에서 구현한다 (07-auto-trading.md 참고)")
+        if price is None:
+            return []
+        return dca.evaluate(now, price, dca.read_state(slot.state), slot.params, slot.invest_amount)
 
     if slot.strategy_type == "grid":
-        if not candles:
+        if price is None:
             return []
-        # 그리드도 확정봉 종가로 판정한다 (07-auto-trading.md 4장 — 신호 평가는 확정봉 기준).
+        # 그리드는 확정봉 종가로 판정한다 (07-auto-trading.md 4장 — 신호 평가는 확정봉 기준).
         # 라인 상태는 워커가 채워 넣은 state.grid.lines를 그대로 읽는다.
         lines = (slot.state.get("grid") or {}).get("lines") or []
         if not lines:
             return []
-        return grid.evaluate(candles[-1].close, lines, slot.params, slot.invest_amount)
+        return grid.evaluate(price, lines, slot.params, slot.invest_amount)
 
     return _evaluate_indicator(slot, candles)

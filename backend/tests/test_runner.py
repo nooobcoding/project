@@ -132,8 +132,40 @@ def test_grid_without_lines_produces_nothing():
     assert evaluate(slot, _candles(180, 150), NOW) == []
 
 
-def test_dca_not_implemented_yet():
-    """DCA는 07 Step 5에서 구현 — 지금은 명시적으로 NotImplementedError여야 한다."""
-    slot = _spec("dca", None, {})
-    with pytest.raises(NotImplementedError):
-        evaluate(slot, _candles(10, 11), NOW)
+# ── DCA 라우팅 ────────────────────────────────────────────────────────────
+
+DCA_PARAMS = {
+    "interval": "1d",
+    "buy_period": "week",
+    "amount_per_buy": 100000,
+    "end_condition": "count",
+    "max_count": 10,
+}
+
+
+def test_dca_routes_to_scheduled_buy():
+    """DCA는 캔들이 아니라 시간으로 트리거된다 — 캔들 없이도 예정 시각이면 매수가 나온다."""
+    slot = _spec("dca", None, DCA_PARAMS)
+    intents = evaluate(slot, [], NOW, current_price=Decimal("100"))
+
+    assert len(intents) == 1
+    assert intents[0].side == "buy"
+    assert intents[0].amount == Decimal("100000")
+
+
+def test_dca_uses_current_price_over_candle_close():
+    """현재가를 명시하면 그것을 쓴다 — 워커는 실시간 시세를, 백테스팅은 봉 종가를 넣는다."""
+    state = {
+        "dca": {
+            "executed_count": 1,
+            "next_buy_at": "2099-01-01T00:00:00+00:00",  # 정기 매수는 아직 멀었다
+            "last_buy_price": "100",
+            "spent_amount": "100000",
+        }
+    }
+    params = {**DCA_PARAMS, "extra_buy_enabled": True, "extra_buy_drop_pct": 10}
+    slot = _spec("dca", None, params, state=state)
+
+    # 봉 종가는 100(변동 없음)이지만 실시간 현재가가 -12%면 추가매수가 나와야 한다.
+    assert evaluate(slot, _candles(100, 100), NOW) == []
+    assert len(evaluate(slot, _candles(100, 100), NOW, current_price=Decimal("88"))) == 1

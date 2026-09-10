@@ -24,6 +24,7 @@ const STRATEGY_TYPE_LABEL: Record<string, string> = {
   trend: "추세추종",
   counter_trend: "역추세",
   grid: "그리드",
+  dca: "DCA",
 };
 
 // 그리드는 지표를 쓰지 않아 indicator가 null이다 — 배지 자체를 그리지 않는다.

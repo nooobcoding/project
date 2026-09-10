@@ -11,6 +11,7 @@ const STRATEGY_TYPE_LABEL: Record<string, string> = {
   trend: "추세추종",
   counter_trend: "역추세",
   grid: "그리드",
+  dca: "DCA",
 };
 
 // 02-dashboard.md 2-B — 07-auto-trading 완료 후 실제 슬롯 데이터에 연결.

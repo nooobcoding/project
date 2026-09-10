@@ -29,8 +29,10 @@ from sqlalchemy import select
 
 from app.constants import TRADING_FEE_RATE
 from app.database import session_scope
+from app.strategy_engine.costs import calc_buy_amount
 from app.models import Coin, Notification, NotificationSetting, StrategySlot
 from app.services import candles as candles_service
+from app.services import notifications as notifications_service
 from app.services import price_stream, slot_state
 from app.services.orders import (
     InsufficientBalanceError,
@@ -38,7 +40,7 @@ from app.services.orders import (
     create_order,
     get_available_quantity,
 )
-from app.strategy_engine import grid, runner
+from app.strategy_engine import dca, grid, runner
 from app.strategy_engine.intents import TradeIntent
 
 logger = logging.getLogger(__name__)
@@ -142,6 +144,12 @@ def process_slot(slot_id: int) -> None:
     if _try_exit(slot):
         return
 
+    # DCA만 확정봉 경로를 타지 않는다 — 시간 스케줄로 트리거되므로(07-auto-trading.md 4장)
+    # 봉 선점에 묶으면 봉 하나당 한 번밖에 평가되지 않아 예정 시각을 맞출 수 없다.
+    if slot.strategy_type == "dca":
+        _try_dca(slot)
+        return
+
     _try_signal(slot)
 
 
@@ -189,6 +197,9 @@ def _try_exit(slot: _SlotSnapshot) -> bool:
     if slot.strategy_type == "grid":
         return _try_grid_exit(slot, position, current_price)
 
+    if slot.strategy_type == "dca":
+        return _try_dca_exit(slot, position, current_price)
+
     reason = decide_exit(
         Decimal(position["avg_price"]), current_price, slot.stop_loss_pct, slot.take_profit_pct
     )
@@ -196,6 +207,35 @@ def _try_exit(slot: _SlotSnapshot) -> bool:
         return False
 
     return _place_sell(slot, Decimal(position["quantity"]))
+
+
+def _try_dca_exit(slot: _SlotSnapshot, position: dict[str, Any], current_price: Decimal) -> bool:
+    """DCA 목표 수익률 익절 — 평균매수가 대비 +X% 도달 시 전량 매도 후 **전략을 종료**한다
+    (06-backtesting.md 2.5절). DCA에는 손절이 없다.
+
+    "전략 종료"는 슬롯을 OFF로 내리는 것으로 구현한다 — 목표를 달성했으니 더 분할매수하지
+    않는다는 뜻이고, 설정과 진행 상태는 남아 있어 사용자가 확인하고 다시 켤 수 있다.
+    """
+    if slot.take_profit_pct is None:
+        return False
+
+    avg_price = Decimal(position["avg_price"])
+    if avg_price <= 0:
+        return False
+    if (current_price - avg_price) / avg_price * 100 < slot.take_profit_pct:
+        return False
+
+    if not _place_sell(slot, Decimal(position["quantity"])):
+        return False
+
+    with session_scope() as db:
+        db.get(StrategySlot, slot.id).is_active = False
+    _notify(
+        slot,
+        "exit",
+        f"[{_korean_name(slot.coin_symbol)}] 목표 수익률에 도달해 전량 매도하고 자동매매를 종료했습니다.",
+    )
+    return True
 
 
 def _try_grid_exit(slot: _SlotSnapshot, position: dict[str, Any], current_price: Decimal) -> bool:
@@ -269,6 +309,61 @@ def _try_signal(slot: _SlotSnapshot) -> None:
 
     for intent in intents:
         _execute_intent(slot, intent)
+
+
+def _try_dca(slot: _SlotSnapshot) -> None:
+    """DCA의 매 tick 경로 — 정기 매수 시각이 됐거나 추가매수 조건이면 한 건 산다."""
+    current_price = _current_price(slot.coin_symbol)
+    if current_price is None:
+        return  # 시세를 모르면 판정 자체가 불가능하다. 상태를 건드리지 않고 다음 tick에 재시도.
+
+    spec = runner.SlotSpec(
+        strategy_type=slot.strategy_type,
+        indicator=slot.indicator,
+        params=slot.params,
+        invest_amount=slot.invest_amount,
+        state=slot.state,
+    )
+    now = datetime.now(timezone.utc)
+    intents = runner.evaluate(spec, [], now=now, current_price=current_price)
+
+    for intent in intents:
+        _execute_dca_buy(slot, intent, now)
+
+
+def _execute_dca_buy(slot: _SlotSnapshot, intent: TradeIntent, now: datetime) -> None:
+    """DCA 매수 한 건을 집행하고 진행 상태를 갱신한다.
+
+    매수가 잔고 부족으로 실패해도 정기 매수분은 다음 예정 시각으로 **민다**. 밀지 않으면
+    `next_buy_at`이 과거인 채로 남아 매 tick(10초)마다 같은 실패와 알림이 반복된다 — 이번
+    회차를 건너뛰고 다음 회차에서 재시도하는 편이 낫다.
+    """
+    filled = _place_buy(slot, intent.amount or Decimal(0))
+    dca_state = dca.read_state(slot.state)
+
+    if filled is None:
+        if intent.reason == dca.SCHEDULED_BUY:
+            dca_state["next_buy_at"] = dca.next_schedule(now, slot.params).isoformat()
+            _write_dca_state(slot, dca_state)
+        return
+
+    fill_price, fill_quantity = filled
+    # 지출은 수수료까지 포함한 실제 체결액으로 쌓는다 — 예산 상한(invest_amount)이 수수료를
+    # 빼놓고 계산되면 상한을 조금씩 넘게 된다 (01-erd.md 3.2절 매수 체결액 계산식).
+    spent = calc_buy_amount(fill_price, fill_quantity, TRADING_FEE_RATE)
+
+    dca_state["executed_count"] += 1
+    dca_state["last_buy_price"] = str(fill_price)
+    dca_state["spent_amount"] = str(Decimal(dca_state["spent_amount"]) + spent)
+    if intent.reason == dca.SCHEDULED_BUY:
+        dca_state["next_buy_at"] = dca.next_schedule(now, slot.params).isoformat()
+    _write_dca_state(slot, dca_state)
+
+
+def _write_dca_state(slot: _SlotSnapshot, dca_state: dict[str, Any]) -> None:
+    with session_scope() as db:
+        slot_state.write_dca_state(db, slot.id, dca_state)
+    slot.state["dca"] = dca_state
 
 
 def _execute_intent(slot: _SlotSnapshot, intent: TradeIntent) -> None:
@@ -409,7 +504,7 @@ def _notify(slot: _SlotSnapshot, type_: str, message: str) -> None:
     """
     with session_scope() as db:
         settings = db.get(NotificationSetting, slot.user_id)
-        if settings is not None and type_ == "error" and not settings.error_enabled:
+        if not notifications_service.is_type_enabled(settings, type_):
             return
         db.add(
             Notification(

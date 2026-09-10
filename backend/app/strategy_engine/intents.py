@@ -29,3 +29,7 @@ class TradeIntent:
     quantity: Decimal | None = None
     # 그리드 전용 — 체결 후 어느 라인을 채우거나 비울지 워커가 알기 위한 값.
     grid_line_index: int | None = None
+    # 같은 "매수"라도 체결 후 갱신할 상태가 다를 때 구분하는 꼬리표.
+    # 예: DCA는 정기 매수(dca_scheduled)일 때만 다음 예정 시각을 밀고, 추가 매수(dca_extra)는
+    # 횟수·지출만 반영한다.
+    reason: str = ""

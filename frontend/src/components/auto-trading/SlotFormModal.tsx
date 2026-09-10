@@ -1,9 +1,12 @@
 import { useMemo, useState, type FormEvent } from "react";
 import { ApiError } from "../../api/client";
 import { NumberInput } from "../NumberInput";
+import { ToggleSwitch } from "../ToggleSwitch";
 import type { CandleInterval } from "../../types/candles";
 import type { Coin } from "../../types/coins";
 import type {
+  DcaEndCondition,
+  DcaPeriod,
   Indicator,
   StrategyParams,
   StrategySlot,
@@ -25,6 +28,13 @@ const STRATEGY_TYPE_LABEL: Record<StrategyType, string> = {
   trend: "추세추종",
   counter_trend: "역추세",
   grid: "그리드",
+  dca: "DCA",
+};
+
+const DCA_PERIOD_LABEL: Record<string, string> = {
+  day: "매일",
+  week: "매주",
+  month: "매월",
 };
 
 const INDICATOR_LABEL: Record<Indicator, string> = {
@@ -59,6 +69,12 @@ function defaultParamValues() {
     lower_price: "",
     upper_price: "",
     grid_count: "5",
+    buy_period: "week",
+    amount_per_buy: "",
+    end_condition: "count",
+    max_count: "10",
+    extra_buy_enabled: "false",
+    extra_buy_drop_pct: "5",
   };
 }
 
@@ -97,8 +113,14 @@ export function SlotFormModal({ coins, slot, onClose, onCreate, onUpdate }: Slot
     setParamValues((prev) => ({ ...prev, [key]: value }));
 
   const isGrid = strategyType === "grid";
+  const isDca = strategyType === "dca";
+  // 지표를 쓰지 않는 전략유형 (06-backtesting.md 2.3·2.4절)
+  const hasNoIndicator = isGrid || isDca;
 
   const requiredParamsFilled = useMemo(() => {
+    if (isDca) {
+      return paramValues.amount_per_buy !== "" && Number(paramValues.amount_per_buy) > 0;
+    }
     if (isGrid) {
       return (
         paramValues.lower_price !== "" &&
@@ -112,7 +134,7 @@ export function SlotFormModal({ coins, slot, onClose, onCreate, onUpdate }: Slot
       return strategyType === "counter_trend" ? base && paramValues.deviation_pct !== "" : base;
     }
     return true; // RSI/MACD/볼린저는 06 문서 기본값이 있어 항상 채워져 있다.
-  }, [isGrid, indicator, strategyType, paramValues]);
+  }, [isGrid, isDca, indicator, strategyType, paramValues]);
 
   const isSubmitDisabled =
     isLockedForEdit ||
@@ -125,6 +147,17 @@ export function SlotFormModal({ coins, slot, onClose, onCreate, onUpdate }: Slot
   const buildParams = (): StrategyParams => {
     const p = paramValues;
     const interval = p.interval as CandleInterval;
+    if (isDca) {
+      return {
+        interval,
+        buy_period: p.buy_period as DcaPeriod,
+        amount_per_buy: Number(p.amount_per_buy || 0),
+        end_condition: p.end_condition as DcaEndCondition,
+        max_count: Number(p.max_count || 10),
+        extra_buy_enabled: p.extra_buy_enabled === "true",
+        extra_buy_drop_pct: Number(p.extra_buy_drop_pct || 5),
+      };
+    }
     if (isGrid) {
       return {
         interval,
@@ -168,7 +201,7 @@ export function SlotFormModal({ coins, slot, onClose, onCreate, onUpdate }: Slot
     };
   };
 
-  const previewText = buildConditionText(strategyType, isGrid ? null : indicator, buildParams());
+  const previewText = buildConditionText(strategyType, hasNoIndicator ? null : indicator, buildParams());
   const exitText = buildExitText(strategyType, stopLossPct, takeProfitPct, buildParams());
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
@@ -180,12 +213,13 @@ export function SlotFormModal({ coins, slot, onClose, onCreate, onUpdate }: Slot
     const input: StrategySlotWriteInput = {
       coin_symbol: coinSymbol,
       strategy_type: strategyType,
-      // 그리드는 지표를 쓰지 않는다 — 백엔드도 (grid, None) 조합만 받는다.
-      indicator: isGrid ? null : indicator,
+      // 그리드·DCA는 지표를 쓰지 않는다 — 백엔드도 (전략유형, None) 조합만 받는다.
+      indicator: hasNoIndicator ? null : indicator,
       params: buildParams(),
       invest_amount: investAmount,
-      // 그리드의 손절은 하한가 이탈로 판정하고 익절은 라인별 실현이라 %필드를 보내지 않는다.
-      stop_loss_pct: isGrid ? undefined : stopLossPct || undefined,
+      // 손절·익절은 전략유형별로 의미가 다르다 (06-backtesting.md 2.5절).
+      // 그리드: 하한가 이탈 손절 + 라인별 실현이라 둘 다 없음 / DCA: 손절 없고 목표 수익률 익절만.
+      stop_loss_pct: isGrid || isDca ? undefined : stopLossPct || undefined,
       take_profit_pct: isGrid ? undefined : takeProfitPct || undefined,
     };
     try {
@@ -235,8 +269,8 @@ export function SlotFormModal({ coins, slot, onClose, onCreate, onUpdate }: Slot
             ))}
           </div>
 
-          {/* 그리드는 지표를 쓰지 않는다 (06-backtesting.md 2.3절) */}
-          {!isGrid && (
+          {/* 그리드·DCA는 지표를 쓰지 않는다 (06-backtesting.md 2.3·2.4절) */}
+          {!hasNoIndicator && (
             <div className="dashboard-tab-row">
               {(Object.keys(INDICATOR_LABEL) as Indicator[]).map((ind) => (
                 <button
@@ -268,7 +302,78 @@ export function SlotFormModal({ coins, slot, onClose, onCreate, onUpdate }: Slot
             </select>
           </div>
 
+          {isDca && (
+            <>
+              <div className="settings-field">
+                <label className="settings-field-label">매수 주기</label>
+                <select
+                  className="auth-input"
+                  value={paramValues.buy_period}
+                  onChange={(event) => setParam("buy_period")(event.target.value)}
+                  disabled={isLockedForEdit}
+                >
+                  {Object.entries(DCA_PERIOD_LABEL).map(([value, label]) => (
+                    <option key={value} value={value}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="settings-field">
+                <label className="settings-field-label">종료 조건</label>
+                <select
+                  className="auth-input"
+                  value={paramValues.end_condition}
+                  onChange={(event) => setParam("end_condition")(event.target.value)}
+                  disabled={isLockedForEdit}
+                >
+                  <option value="count">총 횟수만큼 매수</option>
+                  <option value="budget">투자금이 소진될 때까지</option>
+                </select>
+              </div>
+              <div className="settings-toggle-row">
+                <span className="settings-toggle-label">추가 매수 (하락 시 1회 더)</span>
+                <ToggleSwitch
+                  checked={paramValues.extra_buy_enabled === "true"}
+                  onChange={(value) => setParam("extra_buy_enabled")(String(value))}
+                  disabled={isLockedForEdit}
+                  label="추가 매수 사용"
+                />
+              </div>
+            </>
+          )}
+
           <div className="auto-param-grid">
+            {isDca && (
+              <>
+                <NumberInput
+                  label="회당 매수금액"
+                  value={paramValues.amount_per_buy}
+                  onChange={setParam("amount_per_buy")}
+                  suffix="원"
+                  disabled={isLockedForEdit}
+                />
+                {paramValues.end_condition === "count" && (
+                  <NumberInput
+                    label="총 횟수"
+                    value={paramValues.max_count}
+                    onChange={setParam("max_count")}
+                    suffix="회"
+                    disabled={isLockedForEdit}
+                  />
+                )}
+                {paramValues.extra_buy_enabled === "true" && (
+                  <NumberInput
+                    label="추가매수 하락폭"
+                    value={paramValues.extra_buy_drop_pct}
+                    onChange={setParam("extra_buy_drop_pct")}
+                    suffix="%"
+                    disabled={isLockedForEdit}
+                  />
+                )}
+              </>
+            )}
+
             {isGrid && (
               <>
                 <NumberInput
@@ -294,7 +399,7 @@ export function SlotFormModal({ coins, slot, onClose, onCreate, onUpdate }: Slot
               </>
             )}
 
-            {!isGrid && indicator === "ma" && (
+            {!hasNoIndicator && indicator === "ma" && (
               <>
                 <NumberInput
                   label="단기 기간"
@@ -320,7 +425,7 @@ export function SlotFormModal({ coins, slot, onClose, onCreate, onUpdate }: Slot
               </>
             )}
 
-            {!isGrid && indicator === "rsi" && (
+            {!hasNoIndicator && indicator === "rsi" && (
               <>
                 <NumberInput
                   label="RSI 기간"
@@ -354,7 +459,7 @@ export function SlotFormModal({ coins, slot, onClose, onCreate, onUpdate }: Slot
               </>
             )}
 
-            {!isGrid && indicator === "macd" && (
+            {!hasNoIndicator && indicator === "macd" && (
               <>
                 <NumberInput
                   label="단기 EMA"
@@ -377,7 +482,7 @@ export function SlotFormModal({ coins, slot, onClose, onCreate, onUpdate }: Slot
               </>
             )}
 
-            {!isGrid && indicator === "bollinger" && (
+            {!hasNoIndicator && indicator === "bollinger" && (
               <>
                 <NumberInput
                   label="기간"
@@ -403,19 +508,22 @@ export function SlotFormModal({ coins, slot, onClose, onCreate, onUpdate }: Slot
             disabled={isLockedForEdit}
           />
 
-          {/* 손절·익절은 전략유형별로 의미가 다르다 (06-backtesting.md 2.5절). 그리드는
-              하한가 이탈로 손절하고 익절은 라인별로 개별 실현하므로 %입력 자체가 없다. */}
+          {/* 손절·익절은 전략유형별로 의미가 다르다 (06-backtesting.md 2.5절).
+              그리드: 하한가 이탈로 손절하고 익절은 라인별 실현이라 %입력이 아예 없다.
+              DCA: 손절이 없고 "목표 수익률 익절"만 있다. */}
           {!isGrid && (
             <div className="auto-param-grid">
+              {!isDca && (
+                <NumberInput
+                  label="손절 (선택)"
+                  value={stopLossPct}
+                  onChange={setStopLossPct}
+                  suffix="%"
+                  disabled={isLockedForEdit}
+                />
+              )}
               <NumberInput
-                label="손절 (선택)"
-                value={stopLossPct}
-                onChange={setStopLossPct}
-                suffix="%"
-                disabled={isLockedForEdit}
-              />
-              <NumberInput
-                label="익절 (선택)"
+                label={isDca ? "목표 수익률 익절 (선택)" : "익절 (선택)"}
                 value={takeProfitPct}
                 onChange={setTakeProfitPct}
                 suffix="%"

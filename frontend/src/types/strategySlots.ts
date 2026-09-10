@@ -1,12 +1,12 @@
 // backend/app/schemas/strategy_slots.py 1:1 대응 (docs/02-coding-conventions.md 9장)
 //
-// DCA(dca)는 07 Step 5에서 strategy_engine이 구현된 뒤 이 파일에도 타입을 추가한다 —
-// 지금은 백엔드가 trend/counter_trend/grid만 받으므로 여기도 동일하게 맞춘다
-// (backend/app/schemas/strategy_slots.py 상단 주석과 같은 이유).
+// 그리드·DCA는 지표를 쓰지 않아 indicator가 null이다.
 
 import type { CandleInterval } from "./candles";
 
-export type StrategyType = "trend" | "counter_trend" | "grid";
+export type StrategyType = "trend" | "counter_trend" | "grid" | "dca";
+export type DcaPeriod = "day" | "week" | "month";
+export type DcaEndCondition = "count" | "budget";
 export type Indicator = "ma" | "rsi" | "macd" | "bollinger";
 
 export interface MaTrendParams {
@@ -55,6 +55,16 @@ export interface GridParams {
   grid_count: number;
 }
 
+export interface DcaParams {
+  interval: CandleInterval;
+  buy_period: DcaPeriod;
+  amount_per_buy: number;
+  end_condition: DcaEndCondition;
+  max_count: number;
+  extra_buy_enabled: boolean;
+  extra_buy_drop_pct: number;
+}
+
 export type StrategyParams =
   | MaTrendParams
   | MaCounterTrendParams
@@ -62,7 +72,8 @@ export type StrategyParams =
   | RsiCounterTrendParams
   | MacdParams
   | BollingerParams
-  | GridParams;
+  | GridParams
+  | DcaParams;
 
 // strategy_slots.state — 01-erd.md 3.6절. 워커/체결훅만 쓰고 화면은 읽기 전용으로 참고한다
 // (삭제 확인 모달의 잔여 수량 표시, 07-auto-trading.md 4.2절).
@@ -78,10 +89,18 @@ export interface GridLine {
   quantity: string;
 }
 
+export interface DcaProgress {
+  executed_count: number;
+  next_buy_at: string | null;
+  last_buy_price: string | null;
+  spent_amount: string;
+}
+
 export interface SlotState {
   position?: SlotPosition;
   last_evaluated_candle_at?: string;
   grid?: { lines: GridLine[] };
+  dca?: DcaProgress;
 }
 
 export interface StrategySlot {

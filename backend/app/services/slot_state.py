@@ -145,6 +145,20 @@ def write_grid_lines(db: Session, slot_id: int, lines: list[dict[str, Any]]) -> 
     )
 
 
+def write_dca_state(db: Session, slot_id: int, dca: dict[str, Any]) -> None:
+    """`state.dca`만 갱신한다 — `write_grid_lines`와 같은 이유로 워커 소유 키다
+    (01-erd.md 3.6절 스키마: executed_count / next_buy_at / last_buy_price / spent_amount).
+    커밋은 호출자에게 맡긴다."""
+    db.execute(
+        text(
+            "UPDATE strategy_slots "
+            "SET state = jsonb_set(state, '{dca}', CAST(:dca AS jsonb)) "
+            "WHERE id = :slot_id"
+        ),
+        {"slot_id": slot_id, "dca": _to_json(dca)},
+    )
+
+
 def claim_candle(db: Session, slot_id: int, candle_opened_at: datetime) -> bool:
     """확정봉 하나를 이 슬롯의 "평가 완료"로 선점한다 (07-auto-trading.md 4장 중복 평가 방지).
 

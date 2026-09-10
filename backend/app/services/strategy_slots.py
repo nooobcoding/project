@@ -21,9 +21,8 @@ from app.strategy_engine import runner
 from app.strategy_engine.signals import Signal
 
 _INDICATOR_STRATEGY_TYPES = ("trend", "counter_trend")
+_NO_INDICATOR_STRATEGY_TYPES = ("grid", "dca")
 _VALID_INDICATORS = ("ma", "rsi", "macd", "bollinger")
-# 07 Step 5에서 구현될 때까지 생성 자체를 막는 전략유형.
-_UNSUPPORTED_STRATEGY_TYPES = ("dca",)
 
 
 class CoinNotFoundError(Exception):
@@ -70,10 +69,6 @@ class SlotDeletionResult:
 def _validate_strategy_type_indicator(strategy_type: str, indicator: str | None) -> None:
     """strategy_type-indicator 조합의 구조적 유효성만 검사한다.
 
-    DCA는 07 Step 5에서 `strategy_engine`에 구현되기 전까지 생성 자체를 막는다 — 지금
-    허용하면 toggle_slot으로 ON한 뒤 워커가 `runner.evaluate`를 호출하는 순간
-    NotImplementedError로 죽는다. Step 5가 끝나면 이 제한을 푼다.
-
     indicator 값 자체가 유효 목록에 있는지, 파라미터 범위(RSI 0~100 등)가 맞는지는
     schemas/strategy_slots.py의 Pydantic 모델이 담당한다 (경계 계층의 입력 검증과 제어
     계층의 도메인 규칙 검증을 분리).
@@ -81,8 +76,8 @@ def _validate_strategy_type_indicator(strategy_type: str, indicator: str | None)
     if strategy_type in _INDICATOR_STRATEGY_TYPES:
         if indicator not in _VALID_INDICATORS:
             raise InvalidSlotInputError()
-    elif strategy_type == "grid":
-        # 그리드는 지표를 쓰지 않는다 (06-backtesting.md 2.3절).
+    elif strategy_type in _NO_INDICATOR_STRATEGY_TYPES:
+        # 그리드/DCA는 지표를 쓰지 않는다 (06-backtesting.md 2.3·2.4절).
         if indicator is not None:
             raise InvalidSlotInputError()
     else:
@@ -281,14 +276,11 @@ def get_slot_signal_status(db: Session, user_id: int, slot_id: int) -> Signal | 
 
     워커(07 Step 2B)와 달리 state를 갱신하지 않는 순수 조회다 — 화면에 보여주기 위해
     매번 새로 계산할 뿐, last_evaluated_candle_at 등 워커 소유 상태에는 관여하지 않는다.
-    DCA는 아직 runner.evaluate가 지원하지 않으므로(07 Step 5) None을 반환한다.
 
     엔진은 주문 의도 목록을 돌려주지만 이 카드는 "지금 매수/매도 쪽인가"만 보여주면 되므로
     목록을 한 방향으로 접어서 반환한다 (그리드는 한 번에 여러 라인이 나올 수 있다).
     """
     slot = _get_owned_slot(db, user_id, slot_id)
-    if slot.strategy_type in _UNSUPPORTED_STRATEGY_TYPES:
-        return None
 
     interval = slot.params.get("interval", "1d")
     confirmed_candles = candles_service.get_confirmed_candles(db, slot.coin_symbol, interval)

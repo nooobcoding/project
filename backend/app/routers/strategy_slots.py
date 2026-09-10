@@ -15,6 +15,7 @@ from app.schemas.strategy_slots import (
     StrategySlotPatchRequest,
     StrategySlotResponse,
     StrategySlotWriteRequest,
+    validate_dca_budget,
     validate_params_for,
 )
 from app.services.auth import get_current_user
@@ -83,6 +84,14 @@ def post_strategy_slot(
     stop_loss_pct = _parse_decimal(payload.stop_loss_pct)
     take_profit_pct = _parse_decimal(payload.take_profit_pct)
 
+    # 06-backtesting.md 2.4-1절 — "회당 매수금액 × 총 횟수"가 총 상한을 넘지 않아야 한다.
+    # invest_amount를 함께 봐야 해서 params 스키마 안에서는 검증할 수 없다.
+    if payload.strategy_type == "dca":
+        try:
+            validate_dca_budget(validated_params, invest_amount)
+        except ValueError as exc:
+            raise HTTPException(status_code=http_status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
     try:
         slot = create_slot(
             db,
@@ -133,6 +142,21 @@ def patch_strategy_slot(
                 raise HTTPException(
                     status_code=http_status.HTTP_400_BAD_REQUEST, detail=_PARAM_VALIDATION_ERROR_DETAIL
                 )
+            except KeyError:
+                # 전략유형과 지표 조합이 아예 없는 경우 (예: 그리드인데 지표를 함께 보냄)
+                raise HTTPException(
+                    status_code=http_status.HTTP_400_BAD_REQUEST, detail="올바르게 입력해주세요."
+                )
+
+            invest_amount = _parse_decimal(payload.invest_amount)
+            if payload.strategy_type == "dca":
+                try:
+                    validate_dca_budget(validated_params, invest_amount)
+                except ValueError as exc:
+                    raise HTTPException(
+                        status_code=http_status.HTTP_400_BAD_REQUEST, detail=str(exc)
+                    )
+
             slot = update_slot(
                 db,
                 user_id=current_user.id,
@@ -140,7 +164,7 @@ def patch_strategy_slot(
                 strategy_type=payload.strategy_type,
                 indicator=payload.indicator,
                 params=validated_params,
-                invest_amount=_parse_decimal(payload.invest_amount),
+                invest_amount=invest_amount,
                 stop_loss_pct=_parse_decimal(payload.stop_loss_pct),
                 take_profit_pct=_parse_decimal(payload.take_profit_pct),
             )

@@ -5,12 +5,11 @@
 `indicator` 값을 보고 그중 맞는 모델로 검증한다 — RSI 0~100 범위처럼 06-backtesting.md
 2.2절에 문서화된 제약을 여기서 강제한다 (07-auto-trading.md 6장 "파라미터 범위 초과").
 
-그리드(`grid`)·DCA(`dca`)는 07 Step 4/5에서 `strategy_engine`이 구현된 뒤 이 파일에도
-파라미터 스키마를 추가한다 — 지금은 `strategy_type` Literal에 아예 없어 요청 자체가
-Pydantic 단계에서 거부된다 (services/strategy_slots.py의 동일한 제한과 이중 방어).
+그리드·DCA는 지표를 쓰지 않아 `indicator`가 None이고, 조합 키도 `(전략유형, None)`이다.
 """
 
 from datetime import datetime
+from decimal import Decimal
 from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
@@ -89,7 +88,27 @@ class GridParams(BaseModel):
         return self
 
 
-# (strategy_type, indicator) → 해당 조합의 파라미터 스키마. 그리드는 지표가 없어 키가 None이다.
+class DcaParams(BaseModel):
+    """DCA/분할매수 — 지표 없음 (06-backtesting.md 2.4절).
+
+    "회당 매수금액 × 총 횟수"가 invest_amount를 넘지 않아야 한다는 규칙(06-backtesting.md
+    2.4-1절)은 invest_amount를 함께 봐야 하므로 여기서 검증하지 못한다 — 라우터가
+    `validate_dca_budget`로 따로 확인한다.
+    """
+
+    interval: Interval
+    # RSI/볼린저의 period(숫자)와 이름이 겹치지 않도록 buy_period로 둔다 —
+    # 폼 상태가 전략유형별 파라미터를 한 dict에 평평하게 담기 때문에 키가 겹치면 서로 덮어쓴다.
+    buy_period: Literal["day", "week", "month"]
+    amount_per_buy: float = Field(gt=0)
+    end_condition: Literal["count", "budget"]
+    # end_condition="count"일 때만 의미가 있다.
+    max_count: int = Field(default=10, ge=1, le=1000)
+    extra_buy_enabled: bool = False
+    extra_buy_drop_pct: float = Field(default=5, gt=0, le=100)
+
+
+# (strategy_type, indicator) → 해당 조합의 파라미터 스키마. 그리드/DCA는 지표가 없어 키가 None이다.
 _PARAM_SCHEMAS: dict[tuple[str, str | None], type[BaseModel]] = {
     ("trend", "ma"): MaTrendParams,
     ("counter_trend", "ma"): MaCounterTrendParams,
@@ -100,7 +119,20 @@ _PARAM_SCHEMAS: dict[tuple[str, str | None], type[BaseModel]] = {
     ("trend", "bollinger"): BollingerParams,
     ("counter_trend", "bollinger"): BollingerParams,
     ("grid", None): GridParams,
+    ("dca", None): DcaParams,
 }
+
+
+def validate_dca_budget(params: dict, invest_amount: Decimal) -> None:
+    """"회당 매수금액 × 총 횟수"가 총 상한을 넘지 않는지 (06-backtesting.md 2.4-1절).
+
+    end_condition="budget"이면 invest_amount 자체가 소진 기준이라 횟수 제약이 없다.
+    """
+    if params.get("end_condition") != "count":
+        return
+    planned = Decimal(str(params["amount_per_buy"])) * Decimal(str(params["max_count"]))
+    if planned > invest_amount:
+        raise ValueError("회당 매수금액 × 총 횟수가 투자금을 초과합니다.")
 
 
 class StrategySlotWriteRequest(BaseModel):
@@ -113,7 +145,7 @@ class StrategySlotWriteRequest(BaseModel):
     """
 
     coin_symbol: str
-    strategy_type: Literal["trend", "counter_trend", "grid"]
+    strategy_type: Literal["trend", "counter_trend", "grid", "dca"]
     indicator: Literal["ma", "rsi", "macd", "bollinger"] | None = None
     params: dict
     invest_amount: str
@@ -164,7 +196,7 @@ class StrategySlotPatchRequest(BaseModel):
     두 종류를 한 요청에 섞지 않는다(라우터가 `is_active` 유무로 분기)."""
 
     is_active: bool | None = None
-    strategy_type: Literal["trend", "counter_trend", "grid"] | None = None
+    strategy_type: Literal["trend", "counter_trend", "grid", "dca"] | None = None
     indicator: Literal["ma", "rsi", "macd", "bollinger"] | None = None
     params: dict | None = None
     invest_amount: str | None = None

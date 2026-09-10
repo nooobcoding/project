@@ -23,6 +23,7 @@ from app.models import (
     Order,
     StrategySlot,
 )
+from app.services import notifications as notifications_service
 from app.services import slot_state
 
 
@@ -89,22 +90,6 @@ def _apply_balance(db: Session, order: Order) -> None:
     balance.updated_at = datetime.now(timezone.utc)
 
 
-def _notification_enabled(settings: NotificationSetting | None, type_: str) -> bool:
-    """알림 종류별 수신 설정 (04-settings). 설정 행이 없으면 컬럼 기본값과 동일하게 전부 허용한다.
-
-    services/notification_settings.py의 get_or_create_settings를 쓰지 않는 이유: 그 함수는
-    내부에서 commit을 하는데, 이 훅은 fill_order의 트랜잭션 한가운데서 돌기 때문에 여기서
-    커밋이 일어나면 체결이 미완성 상태로 확정돼 버린다.
-    """
-    if settings is None:
-        return True
-    if type_ == "signal":
-        return settings.signal_enabled
-    if type_ == "exit":
-        return settings.exit_enabled
-    return settings.error_enabled
-
-
 def _format_quantity(quantity: Decimal) -> str:
     """코인 수량 표시 — 의미 없는 뒤쪽 0을 없앤다.
 
@@ -154,7 +139,7 @@ def _apply_auto_trading_hook(db: Session, order: Order) -> None:
 
     notification_type = "signal" if order.side == "buy" else "exit"
     settings = db.get(NotificationSetting, order.user_id)
-    if not _notification_enabled(settings, notification_type):
+    if not notifications_service.is_type_enabled(settings, notification_type):
         return
 
     coin = db.get(Coin, order.coin_symbol)

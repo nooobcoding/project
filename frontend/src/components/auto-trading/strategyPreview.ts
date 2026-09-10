@@ -1,5 +1,6 @@
 import type {
   BollingerParams,
+  DcaParams,
   GridParams,
   Indicator,
   MacdParams,
@@ -19,6 +20,19 @@ export function buildConditionText(
   indicator: Indicator | null,
   params: StrategyParams,
 ): string {
+  if (strategyType === "dca") {
+    const p = params as DcaParams;
+    const period = { day: "매일", week: "매주", month: "매월" }[p.buy_period] ?? p.buy_period;
+    const ending =
+      p.end_condition === "count"
+        ? `총 ${p.max_count}회까지 매수합니다.`
+        : "투자금이 소진될 때까지 매수합니다.";
+    const extra = p.extra_buy_enabled
+      ? ` 직전 매수가보다 ${p.extra_buy_drop_pct}% 이상 떨어지면 1회 추가로 매수합니다.`
+      : "";
+    return `${period} ${p.amount_per_buy.toLocaleString("ko-KR")}원씩 나눠 매수하고, ${ending}${extra}`;
+  }
+
   if (strategyType === "grid") {
     const p = params as GridParams;
     // 간격(%)은 상한/하한/격자 수에서 따라 나오는 파생값이라 입력이 아니라 여기서 계산해 보여준다
@@ -76,6 +90,13 @@ export function buildExitText(
   if (strategyType === "grid") {
     const p = params as GridParams;
     return `가격이 하한가(${p.lower_price.toLocaleString("ko-KR")}원) 아래로 떨어지면 보유분을 전량 청산합니다.`;
+  }
+
+  // DCA는 손절이 없고 "목표 수익률 익절"만 있다 — 도달하면 전량 매도 후 전략을 종료한다.
+  if (strategyType === "dca") {
+    return takeProfitPct
+      ? `평균매수가 대비 +${takeProfitPct}% 도달 시 전량 매도하고 자동매매를 종료합니다.`
+      : null;
   }
 
   const lines: string[] = [];
