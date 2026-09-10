@@ -1571,6 +1571,38 @@ body {
   gap: 12px;
 }
 
+/* 대상 코인 검색+목록 — 03-manual-trading.md CoinListPanel과 동일하게 검색창을 목록 맨 위에
+   고정한다(.auto-coin-select는 세로 flex라 자연히 그렇게 된다). */
+.auto-coin-select {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.auto-coin-select-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+  max-height: 180px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  scrollbar-color: var(--border) transparent; /* Firefox: 트랙 배경 제거 */
+}
+
+.auto-coin-select-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.auto-coin-select-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.auto-coin-select-list::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+
 .auto-preview-box {
   background: var(--bg);
   border: 1px solid var(--border);

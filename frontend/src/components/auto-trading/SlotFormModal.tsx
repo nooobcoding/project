@@ -10,6 +10,7 @@ import type {
   StrategySlotWriteInput,
   StrategyType,
 } from "../../types/strategySlots";
+import { CoinSearchList } from "./CoinSearchList";
 import { buildConditionText, buildExitText } from "./strategyPreview";
 
 interface SlotFormModalProps {
@@ -187,18 +188,12 @@ export function SlotFormModal({ coins, slot, onClose, onCreate, onUpdate }: Slot
         <form className="auto-slot-form" onSubmit={handleSubmit}>
           <div className="settings-field">
             <label className="settings-field-label">대상 코인</label>
-            <select
-              className="auth-input"
-              value={coinSymbol}
-              onChange={(event) => setCoinSymbol(event.target.value)}
+            <CoinSearchList
+              coins={coins}
+              selectedSymbol={coinSymbol}
+              onSelect={setCoinSymbol}
               disabled={isLockedForEdit}
-            >
-              {coins.map((coin) => (
-                <option key={coin.symbol} value={coin.symbol}>
-                  {coin.korean_name} ({coin.symbol})
-                </option>
-              ))}
-            </select>
+            />
           </div>
 
           <div className="dashboard-tab-row">
