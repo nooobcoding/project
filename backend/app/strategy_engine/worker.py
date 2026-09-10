@@ -29,7 +29,7 @@ from sqlalchemy import select
 
 from app.constants import TRADING_FEE_RATE
 from app.database import session_scope
-from app.strategy_engine.costs import calc_buy_amount
+from app.strategy_engine.costs import calc_buy_amount, calc_buy_quantity
 from app.models import Coin, Notification, NotificationSetting, StrategySlot
 from app.services import candles as candles_service
 from app.services import notifications as notifications_service
@@ -40,7 +40,7 @@ from app.services.orders import (
     create_order,
     get_available_quantity,
 )
-from app.strategy_engine import dca, grid, runner
+from app.strategy_engine import dca, exits, grid, runner
 from app.strategy_engine.intents import TradeIntent
 
 logger = logging.getLogger(__name__)
@@ -75,43 +75,6 @@ class _CandlePoint:
 
     opened_at: datetime
     close: Decimal
-
-
-def calc_buy_quantity(invest_amount: Decimal, price: Decimal, fee_rate: Decimal) -> Decimal:
-    """수수료까지 포함한 총 지출이 `invest_amount`를 넘지 않는 최대 매수 수량.
-
-    매수 체결액이 `price × quantity × (1 + fee_rate)`이므로(01-erd.md 3.2절) 그 역산이다.
-    소수점 8자리에서 내림한다 — 올림하면 배정액을 초과할 수 있다.
-    """
-    if price <= 0:
-        return Decimal(0)
-    raw = invest_amount / (price * (1 + fee_rate))
-    return raw.quantize(_QUANTITY_STEP, rounding=ROUND_DOWN)
-
-
-def decide_exit(
-    avg_price: Decimal,
-    current_price: Decimal,
-    stop_loss_pct: Decimal | None,
-    take_profit_pct: Decimal | None,
-) -> str | None:
-    """손절·익절 도달 여부를 판정한다 (06-backtesting.md 2.5절 추세추종/역추세 규칙).
-
-    `stop_loss_pct`/`take_profit_pct`는 양수 퍼센트로 저장된다 — 손절은 진입가 대비
-    `-stop_loss_pct%` 이하로 내려갔을 때다.
-
-    Returns:
-        "take_profit" / "stop_loss" / None
-    """
-    if avg_price <= 0:
-        return None
-
-    profit_pct = (current_price - avg_price) / avg_price * 100
-    if take_profit_pct is not None and profit_pct >= take_profit_pct:
-        return "take_profit"
-    if stop_loss_pct is not None and profit_pct <= -stop_loss_pct:
-        return "stop_loss"
-    return None
 
 
 def run_tick() -> None:
@@ -184,8 +147,25 @@ def _current_price(coin_symbol: str) -> Decimal | None:
     return Decimal(str(tick["trade_price"]))
 
 
+def _build_spec(slot: _SlotSnapshot) -> runner.SlotSpec:
+    """`StrategySlot` → 엔진이 아는 DB 비의존 스펙으로 옮긴다 (runner.py 모듈 docstring)."""
+    return runner.SlotSpec(
+        strategy_type=slot.strategy_type,
+        indicator=slot.indicator,
+        params=slot.params,
+        invest_amount=slot.invest_amount,
+        state=slot.state,
+        stop_loss_pct=slot.stop_loss_pct,
+        take_profit_pct=slot.take_profit_pct,
+    )
+
+
 def _try_exit(slot: _SlotSnapshot) -> bool:
-    """손절·익절 도달 시 슬롯 보유분을 청산한다. 청산 주문을 냈으면 True."""
+    """손절·익절 도달 시 슬롯 보유분을 청산한다. 청산 주문을 냈으면 True.
+
+    판정은 전부 `exits.decide_exit`(엔진, 백테스팅과 공유)이 하고, 여기서는 그 결과를 주문과
+    DB 기록으로 옮기기만 한다 (06 계획 A-1의 "무엇을 할지 / 어떻게 기록할지" 경계).
+    """
     position = slot_state.read_position(slot.state)
     if position is None:
         return False
@@ -194,69 +174,39 @@ def _try_exit(slot: _SlotSnapshot) -> bool:
     if current_price is None:
         return False
 
-    if slot.strategy_type == "grid":
-        return _try_grid_exit(slot, position, current_price)
-
-    if slot.strategy_type == "dca":
-        return _try_dca_exit(slot, position, current_price)
-
-    reason = decide_exit(
-        Decimal(position["avg_price"]), current_price, slot.stop_loss_pct, slot.take_profit_pct
-    )
-    if reason is None:
+    intent = exits.decide_exit(_build_spec(slot), position, current_price)
+    if intent is None:
         return False
 
-    return _place_sell(slot, Decimal(position["quantity"]))
-
-
-def _try_dca_exit(slot: _SlotSnapshot, position: dict[str, Any], current_price: Decimal) -> bool:
-    """DCA 목표 수익률 익절 — 평균매수가 대비 +X% 도달 시 전량 매도 후 **전략을 종료**한다
-    (06-backtesting.md 2.5절). DCA에는 손절이 없다.
-
-    "전략 종료"는 슬롯을 OFF로 내리는 것으로 구현한다 — 목표를 달성했으니 더 분할매수하지
-    않는다는 뜻이고, 설정과 진행 상태는 남아 있어 사용자가 확인하고 다시 켤 수 있다.
-    """
-    if slot.take_profit_pct is None:
+    if not _place_sell(slot, intent.quantity or Decimal(0)):
         return False
 
-    avg_price = Decimal(position["avg_price"])
-    if avg_price <= 0:
-        return False
-    if (current_price - avg_price) / avg_price * 100 < slot.take_profit_pct:
-        return False
-
-    if not _place_sell(slot, Decimal(position["quantity"])):
-        return False
-
-    with session_scope() as db:
-        db.get(StrategySlot, slot.id).is_active = False
-    _notify(
-        slot,
-        "exit",
-        f"[{_korean_name(slot.coin_symbol)}] 목표 수익률에 도달해 전량 매도하고 자동매매를 종료했습니다.",
-    )
+    _record_exit(slot, intent.reason)
     return True
 
 
-def _try_grid_exit(slot: _SlotSnapshot, position: dict[str, Any], current_price: Decimal) -> bool:
-    """그리드 이탈 손절 — 하한가 아래로 떨어지면 슬롯 보유분을 전량 청산한다
-    (06-backtesting.md 2.5절). 그리드에는 익절이 없다(라인별로 개별 실현하므로).
+def _record_exit(slot: _SlotSnapshot, reason: str) -> None:
+    """청산 체결 뒤 전략별 뒷정리 — 주문 자체 외에 남는 DB 작업이 여기 모인다."""
+    if reason == exits.GRID_BREAKOUT:
+        # 라인을 전부 비운다 — 포지션이 사라졌는데 라인이 "채워짐"으로 남아 있으면 가격이
+        # 회복돼도 그 라인은 다시 매수되지 않고, 있지도 않은 수량을 팔려고 하게 된다. 슬롯은
+        # 계속 ON으로 두어 가격이 범위 안으로 돌아오면 그리드를 다시 시작한다.
+        if slot_state.read_grid_lines(slot.state):
+            with session_scope() as db:
+                slot_state.write_grid_lines(db, slot.id, grid.initial_lines(slot.params))
+        return
 
-    청산 후 라인을 전부 비운다 — 포지션이 사라졌는데 라인이 "채워짐"으로 남아 있으면 가격이
-    회복돼도 그 라인은 다시 매수되지 않고, 있지도 않은 수량을 팔려고 하게 된다. 슬롯은 계속
-    ON으로 두어 가격이 범위 안으로 돌아오면 그리드를 다시 시작한다.
-    """
-    if not grid.is_below_lower_bound(current_price, slot.params):
-        return False
-
-    if not _place_sell(slot, Decimal(position["quantity"])):
-        return False
-
-    lines = slot_state.read_grid_lines(slot.state)
-    if lines:
+    if reason == exits.DCA_TAKE_PROFIT:
+        # "전략 종료"는 슬롯을 OFF로 내리는 것으로 구현한다 (06-backtesting.md 2.5절) — 목표를
+        # 달성했으니 더 분할매수하지 않는다는 뜻이고, 설정과 진행 상태는 남아 있어 사용자가
+        # 확인하고 다시 켤 수 있다.
         with session_scope() as db:
-            slot_state.write_grid_lines(db, slot.id, grid.initial_lines(slot.params))
-    return True
+            db.get(StrategySlot, slot.id).is_active = False
+        _notify(
+            slot,
+            "exit",
+            f"[{_korean_name(slot.coin_symbol)}] 목표 수익률에 도달해 전량 매도하고 자동매매를 종료했습니다.",
+        )
 
 
 def _ensure_grid_lines(slot: _SlotSnapshot) -> list[dict[str, Any]] | None:
@@ -298,14 +248,7 @@ def _try_signal(slot: _SlotSnapshot) -> None:
         if not slot_state.claim_candle(db, slot.id, candles[-1].opened_at):
             return
 
-    spec = runner.SlotSpec(
-        strategy_type=slot.strategy_type,
-        indicator=slot.indicator,
-        params=slot.params,
-        invest_amount=slot.invest_amount,
-        state=slot.state,
-    )
-    intents = runner.evaluate(spec, candles, now=datetime.now(timezone.utc))
+    intents = runner.evaluate(_build_spec(slot), candles, now=datetime.now(timezone.utc))
 
     for intent in intents:
         _execute_intent(slot, intent)
@@ -317,15 +260,8 @@ def _try_dca(slot: _SlotSnapshot) -> None:
     if current_price is None:
         return  # 시세를 모르면 판정 자체가 불가능하다. 상태를 건드리지 않고 다음 tick에 재시도.
 
-    spec = runner.SlotSpec(
-        strategy_type=slot.strategy_type,
-        indicator=slot.indicator,
-        params=slot.params,
-        invest_amount=slot.invest_amount,
-        state=slot.state,
-    )
     now = datetime.now(timezone.utc)
-    intents = runner.evaluate(spec, [], now=now, current_price=current_price)
+    intents = runner.evaluate(_build_spec(slot), [], now=now, current_price=current_price)
 
     for intent in intents:
         _execute_dca_buy(slot, intent, now)
@@ -343,21 +279,16 @@ def _execute_dca_buy(slot: _SlotSnapshot, intent: TradeIntent, now: datetime) ->
 
     if filled is None:
         if intent.reason == dca.SCHEDULED_BUY:
-            dca_state["next_buy_at"] = dca.next_schedule(now, slot.params).isoformat()
-            _write_dca_state(slot, dca_state)
+            _write_dca_state(slot, dca.skip_scheduled_buy(dca_state, now, slot.params))
         return
 
     fill_price, fill_quantity = filled
     # 지출은 수수료까지 포함한 실제 체결액으로 쌓는다 — 예산 상한(invest_amount)이 수수료를
     # 빼놓고 계산되면 상한을 조금씩 넘게 된다 (01-erd.md 3.2절 매수 체결액 계산식).
     spent = calc_buy_amount(fill_price, fill_quantity, TRADING_FEE_RATE)
-
-    dca_state["executed_count"] += 1
-    dca_state["last_buy_price"] = str(fill_price)
-    dca_state["spent_amount"] = str(Decimal(dca_state["spent_amount"]) + spent)
-    if intent.reason == dca.SCHEDULED_BUY:
-        dca_state["next_buy_at"] = dca.next_schedule(now, slot.params).isoformat()
-    _write_dca_state(slot, dca_state)
+    _write_dca_state(
+        slot, dca.advance_after_buy(dca_state, intent, fill_price, spent, now, slot.params)
+    )
 
 
 def _write_dca_state(slot: _SlotSnapshot, dca_state: dict[str, Any]) -> None:
@@ -371,42 +302,28 @@ def _execute_intent(slot: _SlotSnapshot, intent: TradeIntent) -> None:
     if intent.side == "buy":
         filled = _place_buy(slot, intent.amount or Decimal(0))
         if filled is not None and intent.grid_line_index is not None:
-            _mark_grid_line(slot, intent.grid_line_index, filled_price=filled[0], filled_quantity=filled[1])
+            # 기록하는 수량은 "살 예정이던 양"이 아니라 **실제 체결된 주문에서 되읽은 값**이다
+            # (07 계획 Step 4) — 시장가는 create_order 안에서 체결까지 끝나고 갱신된 주문을
+            # 돌려주므로 예상과 실제가 벌어질 여지가 없다. 라인(워커 소유)과 state.position
+            # (체결 훅 소유)이 같은 체결을 근거로 갱신되어 서로 어긋나지 않는다.
+            _write_grid_lines(slot, grid.mark_line_filled, intent.grid_line_index, filled[1])
         return
 
     sold = _place_sell(slot, intent.quantity or Decimal(0))
     if sold and intent.grid_line_index is not None:
-        _mark_grid_line(slot, intent.grid_line_index, filled_price=None, filled_quantity=None)
+        _write_grid_lines(slot, grid.mark_line_empty, intent.grid_line_index)
 
 
-def _mark_grid_line(
-    slot: _SlotSnapshot,
-    line_index: int,
-    filled_price: Decimal | None,
-    filled_quantity: Decimal | None,
-) -> None:
-    """라인 하나를 채움/비움으로 표시한다.
-
-    채울 때 기록하는 수량은 "살 예정이던 양"이 아니라 **실제 체결된 주문에서 되읽은 값**이다
-    (07 계획 Step 4) — 시장가는 create_order 안에서 체결까지 끝나고 갱신된 주문을 돌려주므로
-    예상과 실제가 벌어질 여지가 없다. 라인(워커 소유)과 state.position(체결 훅 소유)이 같은
-    체결을 근거로 갱신되어 서로 어긋나지 않는다.
-    """
+def _write_grid_lines(slot: _SlotSnapshot, mark, line_index: int, *args: Any) -> None:
+    """엔진의 라인 갱신 함수로 새 라인 상태를 계산해 저장한다 (계산=엔진, 저장=워커)."""
     lines = slot_state.read_grid_lines(slot.state)
-    if not lines or line_index >= len(lines):
+    if not lines:
         return
 
-    if filled_quantity is None:
-        lines[line_index] = {**lines[line_index], "filled": False, "quantity": "0"}
-    else:
-        lines[line_index] = {
-            **lines[line_index],
-            "filled": True,
-            "quantity": str(filled_quantity),
-        }
-
+    lines = mark(lines, line_index, *args)
     with session_scope() as db:
         slot_state.write_grid_lines(db, slot.id, lines)
+    slot.state.setdefault("grid", {})["lines"] = lines
 
 
 def _place_buy(slot: _SlotSnapshot, amount: Decimal) -> tuple[Decimal, Decimal] | None:

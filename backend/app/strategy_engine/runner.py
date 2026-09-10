@@ -32,6 +32,10 @@ class SlotSpec:
     params: dict[str, Any]
     invest_amount: Decimal
     state: dict[str, Any] = field(default_factory=dict)
+    # 청산 기준(양수 퍼센트). 신호 평가에는 쓰이지 않고 `exits.decide_exit`이 읽는다 —
+    # 전략유형마다 어느 쪽을 쓰는지가 다르다 (06-backtesting.md 2.5절).
+    stop_loss_pct: Decimal | None = None
+    take_profit_pct: Decimal | None = None
 
 
 class CandleLike(Protocol):

@@ -25,11 +25,20 @@ from app.models import (
 )
 from app.services import notifications as notifications_service
 from app.services import slot_state
+from app.strategy_engine import costs
+
+# orders.fee NUMERIC(20,4) — 계산은 costs.py가 하고 컬럼 자릿수만 여기서 맞춘다.
+_FEE_STEP = Decimal("0.0001")
 
 
 def _calculate_fee(price: Decimal, quantity: Decimal) -> Decimal:
-    """체결 수수료(원화)를 계산한다 (01-erd.md 3.2절)."""
-    return (price * quantity * TRADING_FEE_RATE).quantize(Decimal("0.0001"))
+    """체결 수수료(원화)를 orders.fee 자릿수로 계산한다 (01-erd.md 3.2절).
+
+    실체결에는 슬리피지를 적용하지 않는다 — 실시세로 체결되므로 더하면 이중 반영이 된다
+    (00-overview.md 원칙 7 "의도된 비대칭"). 그래서 `costs.calc_fill_price`는 부르지 않고
+    수수료 계산만 공유한다.
+    """
+    return costs.calc_fee(price, quantity, TRADING_FEE_RATE).quantize(_FEE_STEP)
 
 
 def _limit_condition_met(side: str, order_price: Decimal, current_price: Decimal) -> bool:
@@ -66,7 +75,7 @@ def _apply_holdings(db: Session, order: Order) -> Decimal:
     if order.side == "buy":
         # 매수 수수료 포함 취득원가로 가중평균 재계산 (01-erd.md 3.2절)
         cost_before = holding.quantity * holding.avg_buy_price
-        cost_added = order.price * order.quantity * (1 + TRADING_FEE_RATE)
+        cost_added = costs.calc_buy_amount(order.price, order.quantity, TRADING_FEE_RATE)
         new_quantity = holding.quantity + order.quantity
         holding.avg_buy_price = (cost_before + cost_added) / new_quantity
         holding.quantity = new_quantity
@@ -82,11 +91,10 @@ def _apply_holdings(db: Session, order: Order) -> Decimal:
 def _apply_balance(db: Session, order: Order) -> None:
     """balances.krw_balance를 갱신한다 (01-erd.md 3.2절)."""
     balance = db.get(Balance, order.user_id)
-    amount = order.price * order.quantity
     if order.side == "buy":
-        balance.krw_balance -= amount * (1 + TRADING_FEE_RATE)
+        balance.krw_balance -= costs.calc_buy_amount(order.price, order.quantity, TRADING_FEE_RATE)
     else:
-        balance.krw_balance += amount * (1 - TRADING_FEE_RATE)
+        balance.krw_balance += costs.calc_sell_amount(order.price, order.quantity, TRADING_FEE_RATE)
     balance.updated_at = datetime.now(timezone.utc)
 
 
@@ -180,9 +188,8 @@ def fill_order(db: Session, order: Order, fill_price: Decimal) -> bool:
     if order.side == "sell":
         avg_buy_price_before = _apply_holdings(db, order)
         # 매수 수수료가 이미 avg_buy_price에 녹아 있어 이 한 줄로 왕복 수수료가 반영된다 (01-erd.md 3.2절)
-        order.realized_profit = (
-            fill_price * order.quantity * (1 - TRADING_FEE_RATE)
-            - avg_buy_price_before * order.quantity
+        order.realized_profit = costs.calc_realized_profit(
+            fill_price, order.quantity, avg_buy_price_before, TRADING_FEE_RATE
         )
     else:
         _apply_holdings(db, order)
