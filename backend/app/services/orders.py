@@ -128,18 +128,6 @@ def create_order(
     if order_type == "reserved" and (trigger_price is None or trigger_price <= 0):
         raise InvalidOrderInputError()
 
-    # 매수 주문의 FR-M10 잠금 체크는 balances 잠금 "뒤"에 한다 (side 분기 이후 참고) — 여기서
-    # 미리 하면 toggle_slot(ON)이 같은 balances 행을 잠그는 동안 이 체크가 먼저 끝나(TOCTOU)
-    # 슬롯이 막 활성화된 순간의 코인을 수동 매수로 슬쩍 통과시킬 수 있다. 매도는 holdings를
-    # 잠그는데, 여기에 balances 잠금까지 더하면 fill_order가 암묵적으로 holdings→balances
-    # 순서로 잠그는 것과 반대 순서(balances→holdings)가 되어 교착 가능성이 생기므로 매도는
-    # 이 잠금 순서 정렬을 적용하지 않는다 — 매도 쪽은 슬롯이 활성화되는 바로 그 순간과 겹치는
-    # 아주 좁은 창에서만 잠금이 새어나갈 수 있는 채로 남지만, 워커의 청산 로직이 어차피
-    # min(포지션, 가용수량)으로 과매도를 막고 있어 자금 안전에는 영향이 없다.
-    if source == "manual" and side == "sell":
-        if _active_slot_for_coin(db, user_id, coin_symbol) is not None:
-            raise CoinLockedByAutoTradingError()
-
     trigger_direction: str | None = None
     if order_type == "market":
         cached = price_stream.get_cached_price(coin_symbol)
@@ -163,31 +151,32 @@ def create_order(
     else:
         effective_price = price
 
-    if side == "buy":
-        # 가용잔고 조회(get_available_krw)와 주문 insert 사이에 틈이 있으면, 동시에 들어온
-        # 두 주문이 서로 상대방의 동결분을 못 본 채(stale read) 둘 다 통과해 잔고를 초과할
-        # 수 있다. balances 행을 잠가(FOR UPDATE) 같은 유저의 동시 매수 검증을 직렬화한다 —
-        # 체결 쪽은 이미 fill_order의 조건부 UPDATE로 안전하지만, 이 생성 단계는 그렇지
-        # 않았다. 잠금은 이 트랜잭션이 커밋/롤백될 때(바로 아래 db.commit()) 풀린다.
-        db.execute(select(Balance).where(Balance.user_id == user_id).with_for_update())
+    # 매수·매도 모두 balances 행을 가장 먼저 잠근다. 두 가지를 한꺼번에 지키기 위해서다.
+    #   1) 검증과 주문 insert 사이의 틈: 동시에 들어온 두 주문이 서로 상대방의 동결분을 못 본
+    #      채(stale read) 둘 다 통과해 잔고/보유수량을 초과하는 것을 막는다.
+    #   2) FR-M10(활성 슬롯 코인의 수동 주문 잠금) 체크의 TOCTOU: `toggle_slot`(ON)도 같은
+    #      balances 행을 잠그므로, 체크를 이 잠금 "뒤"에 두어야 슬롯이 막 활성화된 순간의 코인이
+    #      수동 주문으로 새어나가지 않는다.
+    # 잠금 순서는 balances → holdings로 고정한다 — 체결(`matcher.fill_order`)도 같은 방향이라
+    # 교착이 생기지 않는다. 잠금은 이 트랜잭션이 커밋/롤백될 때 풀리며, 시장가는 아래에서 체결까지
+    # 같은 트랜잭션으로 이어가므로 검증부터 체결까지 잠금이 끊기지 않는다.
+    db.execute(select(Balance).where(Balance.user_id == user_id).with_for_update())
 
-        # FR-M10 체크를 이 잠금 "뒤"에 한다 — toggle_slot(ON)도 같은 balances 행을 잠그므로,
-        # 두 요청이 겹치면 뒤에 도착한 쪽이 여기서 블록되었다가 앞선 쪽이 커밋한 뒤에야
-        # 최신 활성 슬롯 상태를 보게 된다 (위 모듈 상단 주석 참고).
-        if source == "manual":
-            if _active_slot_for_coin(db, user_id, coin_symbol) is not None:
-                raise CoinLockedByAutoTradingError()
-
-        required = effective_price * quantity * (1 + TRADING_FEE_RATE)
-        if required > get_available_krw(db, user_id):
-            raise InsufficientBalanceError()
-    else:
-        # 매도도 동일한 이유로 holdings 행을 잠가 동시 매도 검증을 직렬화한다.
+    if side == "sell":
         db.execute(
             select(Holding)
             .where(Holding.user_id == user_id, Holding.coin_symbol == coin_symbol)
             .with_for_update()
         )
+
+    if source == "manual" and _active_slot_for_coin(db, user_id, coin_symbol) is not None:
+        raise CoinLockedByAutoTradingError()
+
+    if side == "buy":
+        required = effective_price * quantity * (1 + TRADING_FEE_RATE)
+        if required > get_available_krw(db, user_id):
+            raise InsufficientBalanceError()
+    else:
         if quantity > get_available_quantity(db, user_id, coin_symbol):
             raise InsufficientHoldingError(coin.korean_name)
 
@@ -207,13 +196,18 @@ def create_order(
         created_at=datetime.now(timezone.utc),
     )
     db.add(order)
-    db.commit()
-    db.refresh(order)
 
     if order_type == "market":
+        # 주문 행과 체결을 한 트랜잭션에서 확정한다. 주문을 먼저 커밋하고 체결하면, 체결이
+        # 실패했을 때(교착·DB 장애 등) pending 시장가 주문이 남는다 — 매칭 엔진은 지정가만
+        # 훑으므로(`matcher.run_matching_for_symbol`) 그 주문은 어떤 경로로도 체결되지 않고
+        # 가용 원화만 영구히 동결한다. flush로 id만 확보하고 커밋은 fill_order에 맡긴다.
+        db.flush()
         matcher.fill_order(db, order, fill_price=effective_price)
-        db.refresh(order)
+    else:
+        db.commit()
 
+    db.refresh(order)
     return order
 
 

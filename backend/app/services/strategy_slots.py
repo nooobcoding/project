@@ -9,10 +9,10 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from app.models import Balance, Coin, StrategySlot
+from app.models import Balance, Coin, Notification, Order, StrategySlot
 from app.services import candles as candles_service
 from app.services import slot_state
 from app.services.orders import get_available_krw
@@ -252,6 +252,21 @@ def delete_slot(db: Session, user_id: int, slot_id: int) -> SlotDeletionResult:
 
     position = slot.state.get("position") if slot.state else None
     remaining_quantity = Decimal(position["quantity"]) if position else Decimal(0)
+
+    # 참조를 먼저 끊고 슬롯을 지운다. FK가 ON DELETE SET NULL이라 이 두 UPDATE를 생략해도 결과는
+    # 같지만, 그 경우 잠금 순서가 strategy_slots → (FK 처리로) orders가 되어 체결
+    # (`matcher.fill_order`: orders 행 선점 → … → strategy_slots)과 정반대가 된다. 그 슬롯의
+    # 주문이 체결되는 바로 그 순간 삭제가 들어오면 실제로 교착이 발생한다(PostgreSQL이 감지해
+    # 한쪽을 abort시킨다). 여기서 orders를 먼저 잠그면 양쪽 다 orders → strategy_slots 순서가
+    # 되어 교착 자체가 성립하지 않는다.
+    db.execute(
+        update(Order).where(Order.strategy_slot_id == slot.id).values(strategy_slot_id=None)
+    )
+    db.execute(
+        update(Notification)
+        .where(Notification.strategy_slot_id == slot.id)
+        .values(strategy_slot_id=None)
+    )
 
     db.delete(slot)
     db.commit()

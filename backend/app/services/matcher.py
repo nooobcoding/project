@@ -37,6 +37,11 @@ def _calculate_fee(price: Decimal, quantity: Decimal) -> Decimal:
     실체결에는 슬리피지를 적용하지 않는다 — 실시세로 체결되므로 더하면 이중 반영이 된다
     (00-overview.md 원칙 7 "의도된 비대칭"). 그래서 `costs.calc_fill_price`는 부르지 않고
     수수료 계산만 공유한다.
+
+    **주의**: 여기서 4자리로 반올림한 값은 `orders.fee` 컬럼에 담기는 표시용이고, 실제 잔고
+    증감은 `_apply_balance`가 반올림 없는 `price × quantity × (1 ± rate)`로 계산한다. 그래서
+    체결 건당 최대 0.00005원까지 둘이 어긋난다 — 잔고를 거래 내역으로 재구성할 때는
+    `orders.fee` 합이 아니라 이 계산식을 써야 정확히 맞는다.
     """
     return costs.calc_fee(price, quantity, TRADING_FEE_RATE).quantize(_FEE_STEP)
 
@@ -50,6 +55,32 @@ def _limit_condition_met(side: str, order_price: Decimal, current_price: Decimal
     if side == "buy":
         return current_price <= order_price
     return current_price >= order_price
+
+
+def _lock_user_funds(db: Session, user_id: int) -> None:
+    """이 유저의 자금 관련 행 갱신을 직렬화한다 (체결 전용 잠금).
+
+    `_apply_holdings`/`_apply_balance`는 현재 값을 읽어 "계산한 절대값"으로 UPDATE한다. 이
+    읽기가 잠금 없이 이뤄지면 같은 유저의 체결 두 건이 겹칠 때 각자 같은 값을 읽고 각자
+    계산한 절대값을 써서, 먼저 커밋한 쪽의 차감/가산이 통째로 사라진다(lost update).
+    holdings는 그에 더해 "행이 없으면 만든다" 경로라 양쪽이 동시에 INSERT해 holdings_pkey
+    유니크 위반(→ 처리되지 않은 500)이 나기도 한다. `fill_order` 상단의 조건부 UPDATE는
+    "같은 주문의 중복 체결"만 막을 뿐 이 경합은 막지 못한다.
+
+    체결은 서로 다른 스레드에서 실제로 동시에 일어난다 — 지정가는 시세 스트림 스레드
+    (price_stream.py의 `asyncio.to_thread`), 시장가는 요청 스레드(orders.create_order),
+    자동매매는 워커 스레드가 각각 자기 세션으로 이 함수를 통과한다.
+
+    balances 한 행만 잠그는 것으로 충분하다 — 매수든 매도든 모든 체결이 balances를 갱신하므로
+    이 행이 유저 단위 직렬화 지점이 되고, holdings를 쓰는 주체는 체결뿐이라 함께 보호된다
+    (없는 holdings 행을 FOR UPDATE 해봐야 아무것도 잠기지 않으므로 INSERT 경합은 어차피
+    balances 쪽에서 막아야 한다).
+
+    잠금 순서는 orders(위 조건부 UPDATE) → balances → holdings → strategy_slots 이며,
+    balances를 먼저 잡는 다른 경로들(orders.create_order 매수 검증, strategy_slots.toggle_slot,
+    wallet 입출금)과 방향이 같아 교착이 생기지 않는다.
+    """
+    db.execute(select(Balance).where(Balance.user_id == user_id).with_for_update())
 
 
 def _apply_holdings(db: Session, order: Order) -> Decimal:
@@ -184,6 +215,10 @@ def fill_order(db: Session, order: Order, fill_price: Decimal) -> bool:
     order.filled_at = datetime.now(timezone.utc)
     order.price = fill_price
     order.fee = fee
+
+    # 체결을 선점한 뒤에 잠근다 — 경쟁에서 진 호출(rowcount==0)은 아무것도 갱신하지 않으므로
+    # 잠글 필요도 없다.
+    _lock_user_funds(db, order.user_id)
 
     if order.side == "sell":
         avg_buy_price_before = _apply_holdings(db, order)
