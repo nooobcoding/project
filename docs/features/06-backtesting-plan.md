@@ -169,7 +169,7 @@ def get_candles_in_range(db, symbol, interval, start, end) -> list[Candle]
 
 ---
 
-## Phase E — 프론트 `/backtest` (Sonnet)
+## Phase E — 프론트 `/backtest` (Sonnet) — **구현완료**
 
 2컬럼 — 설정 패널(260px) / 결과 패널. `.trade-grid`(1fr 260px) 대신 **`.wallet-grid` 배치**(고정폭 왼쪽)를 참고해 `.backtest-*` 접두 블록을 `index.css` 끝에 추가.
 
@@ -178,6 +178,24 @@ def get_candles_in_range(db, symbol, interval, start, end) -> list[Candle]
 - 실행 중 표시는 기존 관례대로 버튼 라벨 전환 + disabled (Progress Bar 컴포넌트가 프로젝트에 없다).
 - 결과 저장(라벨 입력, 기본값 `{전략유형}-{지표}-{코인}-{저장일}`) / 불러오기 목록 팝업 — `dashboard-modal-*` 패턴 재사용.
 - `App.tsx`에 `/backtest` 라우트, `Gnb.tsx`의 `isBuilt: true`.
+
+**구현 시 발견한 실제 버그(z-index)**: `.dashboard-modal-backdrop`(모든 모달의 공용 배경)에
+명시적 `z-index`가 없었다. `lightweight-charts`가 내부 캔버스에 `z-index: 1~2`를 직접 지정하는데,
+이 화면 전에는 어떤 화면도 차트와 모달을 동시에 쓰지 않아 드러나지 않았던 잠재 버그였다 —
+Playwright로 "결과 저장" 모달의 저장 버튼을 클릭했더니 그 아래 차트 캔버스가 클릭을 가로챘다
+(`element intercepts pointer events`). `.dashboard-modal-backdrop`에 `z-index: 1000`을 추가해
+해결 — 이 클래스를 쓰는 07의 기존 모달들에도 영향 없이 전부 안전해진다(일반적으로 그 값들보다
+훨씬 높은 값이라 항상 위에 뜬다). 06이 새로 발견했지만 07까지 함께 고쳐지는 공용 수정.
+
+기타 구현 중 정정: 최종자산 등 원화 표시가 `NUMERIC(20,4)`의 소수 4자리를 그대로 보여주던 것을
+`maximumFractionDigits: 0`으로 반올림. 불러오기 시 초기투자금/수수료율/슬리피지율에 저장된
+DB 값의 뒤따르는 0(`10000000.0000`, `0.050`)이 그대로 보이던 것을 표시 직전 정리.
+
+**차트 마커 클릭 검증 방법**: `chart.subscribeClick`은 클릭한 x좌표에서 가장 가까운 시간축
+값을 반환하며 y좌표(마커를 실제로 맞혔는지)와 무관하다. Playwright로 캔버스 좌표를 추정해
+클릭하는 방식은 부정확할 수 있어(시간축이 데이터 인덱스에 정확히 선형 비례하지 않음), 실제
+검증은 차트 영역 전체를 촘촘히 스캔해 히트하는 지점을 찾는 방식으로 했다 — 정확한 지점을 찾으면
+올바른 체결 정보(매수/매도·가격·수량·시각)가 담긴 팝업이 뜨는 것까지 확인했다.
 
 ---
 

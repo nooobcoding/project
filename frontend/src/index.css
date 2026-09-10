@@ -680,6 +680,9 @@ body {
 .dashboard-modal-backdrop {
   position: fixed;
   inset: 0;
+  z-index: 1000; /* lightweight-charts가 내부 캔버스에 z-index:1~2를 직접 지정하므로(06
+    백테스팅 화면에서 발견) 명시적 z-index 없이는 position:fixed라도 그 캔버스에 클릭이
+    가로채인다 — 모든 모달의 공용 배경이라 여기 한 곳만 고치면 된다. */
   background: rgba(0, 0, 0, 0.6);
   display: flex;
   align-items: center;
@@ -1754,3 +1757,127 @@ body {
   align-items: center;
   justify-content: space-between;
 }
+
+/* SCR-05 — 백테스팅 (docs/features/06-backtesting.md) */
+
+.backtest-grid {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  gap: 24px;
+  align-items: start;
+  padding: 24px;
+}
+
+@media (max-width: 900px) {
+  .backtest-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.backtest-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+  min-width: 0;
+}
+
+.backtest-settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.backtest-date-range-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+}
+
+.backtest-result-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.backtest-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.backtest-metric-tile {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.backtest-metric-value {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 700;
+}
+
+.backtest-metric-caption {
+  margin: 2px 0 0;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.backtest-load-modal {
+  width: min(420px, 90vw);
+  max-height: 85vh;
+  overflow-y: auto;
+}
+
+.backtest-result-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.backtest-result-list-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.backtest-result-list-item:hover {
+  background: var(--bg);
+}
+
+.backtest-result-list-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.backtest-result-list-label {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.backtest-result-list-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+/* 수익률 색은 기존 .is-positive/.is-negative(상승 빨강/하락 녹색, 02-dashboard.md 관례)를 그대로 쓴다. */
