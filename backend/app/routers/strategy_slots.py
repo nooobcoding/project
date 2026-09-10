@@ -25,6 +25,7 @@ from app.services.strategy_slots import (
     InsufficientBalanceError,
     InvalidSlotInputError,
     SlotActiveError,
+    SlotHasPositionError,
     SlotNotFoundError,
     create_slot,
     delete_slot,
@@ -74,6 +75,9 @@ def post_strategy_slot(
         validated_params = validate_params_for(payload.strategy_type, payload.indicator, payload.params)
     except ValidationError:
         raise HTTPException(status_code=http_status.HTTP_400_BAD_REQUEST, detail=_PARAM_VALIDATION_ERROR_DETAIL)
+    except KeyError:
+        # 전략유형과 지표 조합이 아예 없는 경우 (예: 그리드인데 지표를 함께 보냄)
+        raise HTTPException(status_code=http_status.HTTP_400_BAD_REQUEST, detail="올바르게 입력해주세요.")
 
     invest_amount = _parse_decimal(payload.invest_amount)
     stop_loss_pct = _parse_decimal(payload.stop_loss_pct)
@@ -114,9 +118,9 @@ def patch_strategy_slot(
         if payload.is_active is not None:
             slot = toggle_slot(db, current_user.id, slot_id, payload.is_active)
         else:
+            # indicator는 필수 항목이 아니다 — 그리드는 지표를 쓰지 않아 항상 None이다.
             if (
                 payload.strategy_type is None
-                or payload.indicator is None
                 or payload.params is None
                 or payload.invest_amount is None
             ):
@@ -146,6 +150,11 @@ def patch_strategy_slot(
         raise HTTPException(
             status_code=http_status.HTTP_409_CONFLICT,
             detail="실행 중인 전략은 먼저 OFF한 뒤 수정해주세요.",
+        )
+    except SlotHasPositionError:
+        raise HTTPException(
+            status_code=http_status.HTTP_409_CONFLICT,
+            detail="보유 중인 코인이 남아 있는 그리드 전략은 설정을 바꿀 수 없습니다. 전략을 삭제한 뒤 다시 만들어주세요.",
         )
     except InvalidSlotInputError:
         raise HTTPException(status_code=http_status.HTTP_400_BAD_REQUEST, detail="올바르게 입력해주세요.")

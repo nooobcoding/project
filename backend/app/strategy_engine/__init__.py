@@ -5,7 +5,8 @@ DB·FastAPI 어느 쪽에도 의존하지 않는 순수 패키지다. 07 워커�
 호출하고, DB 모델(`StrategySlot`) ↔ `SlotSpec` 변환은 호출부(워커) 책임으로 남긴다.
 """
 
+from app.strategy_engine.intents import TradeIntent
 from app.strategy_engine.runner import CandleLike, SlotSpec, evaluate
 from app.strategy_engine.signals import Signal
 
-__all__ = ["CandleLike", "Signal", "SlotSpec", "evaluate"]
+__all__ = ["CandleLike", "Signal", "SlotSpec", "TradeIntent", "evaluate"]

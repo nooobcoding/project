@@ -15,7 +15,8 @@ from typing import Any, Callable, Literal, Protocol, Sequence
 
 import pandas as pd
 
-from app.strategy_engine import signals
+from app.strategy_engine import grid, signals
+from app.strategy_engine.intents import TradeIntent
 from app.strategy_engine.signals import Signal
 
 StrategyType = Literal["trend", "counter_trend", "grid", "dca"]
@@ -29,6 +30,7 @@ class SlotSpec:
     strategy_type: StrategyType
     indicator: Indicator | None
     params: dict[str, Any]
+    invest_amount: Decimal
     state: dict[str, Any] = field(default_factory=dict)
 
 
@@ -53,8 +55,48 @@ _SIGNAL_FUNCS: dict[tuple[StrategyType, Indicator], Callable[[pd.Series, dict[st
 }
 
 
-def evaluate(slot: SlotSpec, candles: Sequence[CandleLike], now: datetime) -> Signal | None:
-    """확정봉 시퀀스로 슬롯의 매수/매도 신호를 판정한다.
+def _position_quantity(state: dict[str, Any]) -> Decimal:
+    position = state.get("position") if state else None
+    return Decimal(position["quantity"]) if position else Decimal(0)
+
+
+def _evaluate_indicator(slot: SlotSpec, candles: Sequence[CandleLike]) -> list[TradeIntent]:
+    """추세추종/역추세 — 지표 신호 1개를 주문 의도 0~1개로 옮긴다."""
+    if slot.indicator is None:
+        raise ValueError(f"strategy_type={slot.strategy_type!r}는 indicator가 필요하다")
+
+    signal_func = _SIGNAL_FUNCS.get((slot.strategy_type, slot.indicator))
+    if signal_func is None:
+        raise ValueError(f"지원하지 않는 조합: strategy_type={slot.strategy_type!r}, indicator={slot.indicator!r}")
+
+    if len(candles) < 2:
+        return []
+
+    closes = pd.Series([float(c.close) for c in candles], dtype="float64")
+    signal: Signal | None = signal_func(closes, slot.params)
+    held = _position_quantity(slot.state)
+
+    if signal == "buy":
+        # invest_amount는 "1회 진입 금액"이고 진입 후 청산까지 재사용하지 않는다
+        # (06-backtesting.md 2.4-1절) — 이미 보유 중이면 추가 매수하지 않는다.
+        if held > 0:
+            return []
+        return [TradeIntent(side="buy", amount=slot.invest_amount)]
+
+    if signal == "sell":
+        if held <= 0:
+            return []
+        return [TradeIntent(side="sell", quantity=held)]
+
+    return []
+
+
+def evaluate(slot: SlotSpec, candles: Sequence[CandleLike], now: datetime) -> list[TradeIntent]:
+    """확정봉 시퀀스로 이번에 낼 주문들을 판정한다.
+
+    반환이 목록인 이유는 `intents.py` 참고 — 그리드는 가격이 여러 라인을 관통하면 한 번의
+    평가에서 여러 주문이 나오고, 전략유형마다 1회 주문 규모의 의미가 달라 금액/수량까지 엔진이
+    정해야 하기 때문이다.
 
     Args:
         slot: 평가 대상 슬롯 스펙
@@ -64,22 +106,19 @@ def evaluate(slot: SlotSpec, candles: Sequence[CandleLike], now: datetime) -> Si
         now: 평가 시각. DCA의 시간 스케줄 트리거(`state.dca.next_buy_at`) 판정에 쓰인다.
 
     Returns:
-        "buy" / "sell" / None (신호 없음)
+        이번에 낼 주문 의도 목록 (없으면 빈 목록)
     """
-    if slot.strategy_type == "grid":
-        raise NotImplementedError("그리드는 07 Step 4에서 구현한다 (07-auto-trading.md 참고)")
     if slot.strategy_type == "dca":
         raise NotImplementedError("DCA는 07 Step 5에서 구현한다 (07-auto-trading.md 참고)")
 
-    if slot.indicator is None:
-        raise ValueError(f"strategy_type={slot.strategy_type!r}는 indicator가 필요하다")
+    if slot.strategy_type == "grid":
+        if not candles:
+            return []
+        # 그리드도 확정봉 종가로 판정한다 (07-auto-trading.md 4장 — 신호 평가는 확정봉 기준).
+        # 라인 상태는 워커가 채워 넣은 state.grid.lines를 그대로 읽는다.
+        lines = (slot.state.get("grid") or {}).get("lines") or []
+        if not lines:
+            return []
+        return grid.evaluate(candles[-1].close, lines, slot.params, slot.invest_amount)
 
-    signal_func = _SIGNAL_FUNCS.get((slot.strategy_type, slot.indicator))
-    if signal_func is None:
-        raise ValueError(f"지원하지 않는 조합: strategy_type={slot.strategy_type!r}, indicator={slot.indicator!r}")
-
-    if len(candles) < 2:
-        return None
-
-    closes = pd.Series([float(c.close) for c in candles], dtype="float64")
-    return signal_func(closes, slot.params)
+    return _evaluate_indicator(slot, candles)

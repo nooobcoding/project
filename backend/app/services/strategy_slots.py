@@ -14,14 +14,16 @@ from sqlalchemy.orm import Session
 
 from app.models import Balance, Coin, StrategySlot
 from app.services import candles as candles_service
+from app.services import slot_state
 from app.services.orders import get_available_krw
 from app.services.wallet import get_withdrawable_krw
 from app.strategy_engine import runner
 from app.strategy_engine.signals import Signal
 
 _INDICATOR_STRATEGY_TYPES = ("trend", "counter_trend")
-_NO_INDICATOR_STRATEGY_TYPES = ("grid", "dca")
 _VALID_INDICATORS = ("ma", "rsi", "macd", "bollinger")
+# 07 Step 5에서 구현될 때까지 생성 자체를 막는 전략유형.
+_UNSUPPORTED_STRATEGY_TYPES = ("dca",)
 
 
 class CoinNotFoundError(Exception):
@@ -38,6 +40,10 @@ class SlotNotFoundError(Exception):
 
 class SlotActiveError(Exception):
     """활성(ON) 상태인 슬롯의 설정을 수정하려는 경우 — 먼저 OFF해야 한다."""
+
+
+class SlotHasPositionError(Exception):
+    """포지션을 보유한 그리드 슬롯의 설정을 수정하려는 경우 (services 내 update_slot 참고)."""
 
 
 class InsufficientBalanceError(Exception):
@@ -64,11 +70,9 @@ class SlotDeletionResult:
 def _validate_strategy_type_indicator(strategy_type: str, indicator: str | None) -> None:
     """strategy_type-indicator 조합의 구조적 유효성만 검사한다.
 
-    그리드/DCA(`_NO_INDICATOR_STRATEGY_TYPES`)는 07 Step 4/5에서 `strategy_engine`에
-    구현되기 전까지는 생성 자체를 막는다 — 지금 허용하면 toggle_slot으로 ON한 뒤 워커가
-    `runner.evaluate`를 호출하는 순간 NotImplementedError로 죽는다. Step 4/5가 끝나면
-    이 제한을 풀고 `_NO_INDICATOR_STRATEGY_TYPES`를 `_INDICATOR_STRATEGY_TYPES`와 같은
-    분기로 합류시킨다.
+    DCA는 07 Step 5에서 `strategy_engine`에 구현되기 전까지 생성 자체를 막는다 — 지금
+    허용하면 toggle_slot으로 ON한 뒤 워커가 `runner.evaluate`를 호출하는 순간
+    NotImplementedError로 죽는다. Step 5가 끝나면 이 제한을 푼다.
 
     indicator 값 자체가 유효 목록에 있는지, 파라미터 범위(RSI 0~100 등)가 맞는지는
     schemas/strategy_slots.py의 Pydantic 모델이 담당한다 (경계 계층의 입력 검증과 제어
@@ -77,8 +81,10 @@ def _validate_strategy_type_indicator(strategy_type: str, indicator: str | None)
     if strategy_type in _INDICATOR_STRATEGY_TYPES:
         if indicator not in _VALID_INDICATORS:
             raise InvalidSlotInputError()
-    elif strategy_type in _NO_INDICATOR_STRATEGY_TYPES:
-        raise InvalidSlotInputError()
+    elif strategy_type == "grid":
+        # 그리드는 지표를 쓰지 않는다 (06-backtesting.md 2.3절).
+        if indicator is not None:
+            raise InvalidSlotInputError()
     else:
         raise InvalidSlotInputError()
 
@@ -169,6 +175,14 @@ def update_slot(
     slot = _get_owned_slot(db, user_id, slot_id)
     if slot.is_active:
         raise SlotActiveError()
+
+    # 그리드 라인 가격은 상한/하한/격자 수에서 파생되므로, 포지션을 든 채 그 값을 바꾸면
+    # 라인이 전부 "빈 라인"으로 재초기화되면서 이미 산 몫을 또 사게 된다(배정액 초과).
+    # 지표형 전략은 라인 같은 파생 상태가 없어 이 제약이 필요 없다.
+    if (slot.strategy_type == "grid" or strategy_type == "grid") and slot_state.read_position(
+        slot.state
+    ) is not None:
+        raise SlotHasPositionError()
 
     _validate_strategy_type_indicator(strategy_type, indicator)
     if invest_amount <= 0:
@@ -267,10 +281,13 @@ def get_slot_signal_status(db: Session, user_id: int, slot_id: int) -> Signal | 
 
     워커(07 Step 2B)와 달리 state를 갱신하지 않는 순수 조회다 — 화면에 보여주기 위해
     매번 새로 계산할 뿐, last_evaluated_candle_at 등 워커 소유 상태에는 관여하지 않는다.
-    그리드/DCA는 아직 runner.evaluate가 지원하지 않으므로(07 Step 4/5) None을 반환한다.
+    DCA는 아직 runner.evaluate가 지원하지 않으므로(07 Step 5) None을 반환한다.
+
+    엔진은 주문 의도 목록을 돌려주지만 이 카드는 "지금 매수/매도 쪽인가"만 보여주면 되므로
+    목록을 한 방향으로 접어서 반환한다 (그리드는 한 번에 여러 라인이 나올 수 있다).
     """
     slot = _get_owned_slot(db, user_id, slot_id)
-    if slot.strategy_type in _NO_INDICATOR_STRATEGY_TYPES:
+    if slot.strategy_type in _UNSUPPORTED_STRATEGY_TYPES:
         return None
 
     interval = slot.params.get("interval", "1d")
@@ -280,6 +297,13 @@ def get_slot_signal_status(db: Session, user_id: int, slot_id: int) -> Signal | 
         strategy_type=slot.strategy_type,
         indicator=slot.indicator,
         params=slot.params,
+        invest_amount=slot.invest_amount,
         state=slot.state,
     )
-    return runner.evaluate(spec, confirmed_candles, now=datetime.now(timezone.utc))
+    intents = runner.evaluate(spec, confirmed_candles, now=datetime.now(timezone.utc))
+
+    if any(intent.side == "buy" for intent in intents):
+        return "buy"
+    if any(intent.side == "sell" for intent in intents):
+        return "sell"
+    return None

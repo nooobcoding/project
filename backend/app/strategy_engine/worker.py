@@ -38,8 +38,8 @@ from app.services.orders import (
     create_order,
     get_available_quantity,
 )
-from app.strategy_engine import runner
-from app.strategy_engine.signals import Signal
+from app.strategy_engine import grid, runner
+from app.strategy_engine.intents import TradeIntent
 
 logger = logging.getLogger(__name__)
 
@@ -186,17 +186,60 @@ def _try_exit(slot: _SlotSnapshot) -> bool:
     if current_price is None:
         return False
 
+    if slot.strategy_type == "grid":
+        return _try_grid_exit(slot, position, current_price)
+
     reason = decide_exit(
         Decimal(position["avg_price"]), current_price, slot.stop_loss_pct, slot.take_profit_pct
     )
     if reason is None:
         return False
 
-    return _place_sell(slot, position)
+    return _place_sell(slot, Decimal(position["quantity"]))
+
+
+def _try_grid_exit(slot: _SlotSnapshot, position: dict[str, Any], current_price: Decimal) -> bool:
+    """그리드 이탈 손절 — 하한가 아래로 떨어지면 슬롯 보유분을 전량 청산한다
+    (06-backtesting.md 2.5절). 그리드에는 익절이 없다(라인별로 개별 실현하므로).
+
+    청산 후 라인을 전부 비운다 — 포지션이 사라졌는데 라인이 "채워짐"으로 남아 있으면 가격이
+    회복돼도 그 라인은 다시 매수되지 않고, 있지도 않은 수량을 팔려고 하게 된다. 슬롯은 계속
+    ON으로 두어 가격이 범위 안으로 돌아오면 그리드를 다시 시작한다.
+    """
+    if not grid.is_below_lower_bound(current_price, slot.params):
+        return False
+
+    if not _place_sell(slot, Decimal(position["quantity"])):
+        return False
+
+    lines = slot_state.read_grid_lines(slot.state)
+    if lines:
+        with session_scope() as db:
+            slot_state.write_grid_lines(db, slot.id, grid.initial_lines(slot.params))
+    return True
+
+
+def _ensure_grid_lines(slot: _SlotSnapshot) -> list[dict[str, Any]] | None:
+    """그리드 라인 상태를 보장한다 — 없거나 파라미터와 어긋나면 새로 초기화해 저장한다.
+
+    라인 가격은 상한/하한/격자 수에서 나오므로, 슬롯을 OFF한 사이 그 값이 바뀌면 기존 라인은
+    의미를 잃는다. 포지션을 들고 있는 그리드 슬롯의 설정 변경은 services/strategy_slots.py가
+    막고 있어(라인과 포지션이 어긋나면 배정액을 넘겨 사게 된다), 여기서 재초기화가 일어나는
+    경우는 포지션이 없는 상태뿐이다.
+    """
+    lines = slot_state.read_grid_lines(slot.state)
+    if grid.lines_match_params(lines, slot.params):
+        return lines
+
+    lines = grid.initial_lines(slot.params)
+    with session_scope() as db:
+        slot_state.write_grid_lines(db, slot.id, lines)
+    slot.state.setdefault("grid", {})["lines"] = lines
+    return lines
 
 
 def _try_signal(slot: _SlotSnapshot) -> None:
-    """새 확정봉이 있으면 그 봉으로 신호를 평가하고 주문한다."""
+    """새 확정봉이 있으면 그 봉으로 평가하고, 엔진이 낸 주문 의도를 순서대로 집행한다."""
     interval = slot.params.get("interval", "1d")
     with session_scope() as db:
         candles = [
@@ -204,6 +247,9 @@ def _try_signal(slot: _SlotSnapshot) -> None:
             for candle in candles_service.get_confirmed_candles(db, slot.coin_symbol, interval)
         ]
     if len(candles) < 2:
+        return
+
+    if slot.strategy_type == "grid" and _ensure_grid_lines(slot) is None:
         return
 
     # 봉 선점을 주문보다 "먼저" 커밋한다 — 주문 도중 실패해도 같은 봉으로 다시 진입하지
@@ -216,36 +262,78 @@ def _try_signal(slot: _SlotSnapshot) -> None:
         strategy_type=slot.strategy_type,
         indicator=slot.indicator,
         params=slot.params,
+        invest_amount=slot.invest_amount,
         state=slot.state,
     )
-    signal: Signal | None = runner.evaluate(spec, candles, now=datetime.now(timezone.utc))
+    intents = runner.evaluate(spec, candles, now=datetime.now(timezone.utc))
 
-    if signal == "buy":
-        _place_buy(slot)
-    elif signal == "sell":
-        position = slot_state.read_position(slot.state)
-        if position is not None:
-            _place_sell(slot, position)
+    for intent in intents:
+        _execute_intent(slot, intent)
 
 
-def _place_buy(slot: _SlotSnapshot) -> None:
-    """매수 신호를 주문으로 옮긴다. 워커 주문은 항상 시장가다 (07-auto-trading.md 4.1절)."""
-    # 추세추종/역추세의 invest_amount는 "1회 진입 금액"이며 진입 후 청산까지 재사용하지
-    # 않는다 (06-backtesting.md 2.4-1절) — 이미 포지션이 있으면 추가 매수하지 않는다.
-    if slot_state.read_position(slot.state) is not None:
+def _execute_intent(slot: _SlotSnapshot, intent: TradeIntent) -> None:
+    """주문 의도 하나를 실제 주문으로 옮기고, 그리드면 체결 결과로 라인을 갱신한다."""
+    if intent.side == "buy":
+        filled = _place_buy(slot, intent.amount or Decimal(0))
+        if filled is not None and intent.grid_line_index is not None:
+            _mark_grid_line(slot, intent.grid_line_index, filled_price=filled[0], filled_quantity=filled[1])
         return
+
+    sold = _place_sell(slot, intent.quantity or Decimal(0))
+    if sold and intent.grid_line_index is not None:
+        _mark_grid_line(slot, intent.grid_line_index, filled_price=None, filled_quantity=None)
+
+
+def _mark_grid_line(
+    slot: _SlotSnapshot,
+    line_index: int,
+    filled_price: Decimal | None,
+    filled_quantity: Decimal | None,
+) -> None:
+    """라인 하나를 채움/비움으로 표시한다.
+
+    채울 때 기록하는 수량은 "살 예정이던 양"이 아니라 **실제 체결된 주문에서 되읽은 값**이다
+    (07 계획 Step 4) — 시장가는 create_order 안에서 체결까지 끝나고 갱신된 주문을 돌려주므로
+    예상과 실제가 벌어질 여지가 없다. 라인(워커 소유)과 state.position(체결 훅 소유)이 같은
+    체결을 근거로 갱신되어 서로 어긋나지 않는다.
+    """
+    lines = slot_state.read_grid_lines(slot.state)
+    if not lines or line_index >= len(lines):
+        return
+
+    if filled_quantity is None:
+        lines[line_index] = {**lines[line_index], "filled": False, "quantity": "0"}
+    else:
+        lines[line_index] = {
+            **lines[line_index],
+            "filled": True,
+            "quantity": str(filled_quantity),
+        }
+
+    with session_scope() as db:
+        slot_state.write_grid_lines(db, slot.id, lines)
+
+
+def _place_buy(slot: _SlotSnapshot, amount: Decimal) -> tuple[Decimal, Decimal] | None:
+    """`amount`(원화)만큼 시장가로 매수한다 (07-auto-trading.md 4.1절 — 워커는 항상 시장가).
+
+    Returns:
+        체결된 (체결가, 체결수량). 주문을 내지 못했으면 None.
+    """
+    if amount <= 0:
+        return None
 
     current_price = _current_price(slot.coin_symbol)
     if current_price is None:
-        return
+        return None
 
-    quantity = calc_buy_quantity(slot.invest_amount, current_price, TRADING_FEE_RATE)
+    quantity = calc_buy_quantity(amount, current_price, TRADING_FEE_RATE)
     if quantity <= 0:
-        return
+        return None
 
     try:
         with session_scope() as db:
-            create_order(
+            order = create_order(
                 db,
                 user_id=slot.user_id,
                 coin_symbol=slot.coin_symbol,
@@ -255,6 +343,7 @@ def _place_buy(slot: _SlotSnapshot) -> None:
                 source="auto",
                 strategy_slot_id=slot.id,
             )
+            return order.price, order.quantity
     except InsufficientBalanceError:
         # 활성화 시점엔 배정액이 확보돼 있었어도 그 사이 수동 출금 등으로 가용 원화가 줄어들 수
         # 있다. 이번 매수만 건너뛰고 슬롯은 ON으로 유지한다 (07-auto-trading.md 2.1절·6장).
@@ -263,13 +352,14 @@ def _place_buy(slot: _SlotSnapshot) -> None:
             "error",
             f"[{_korean_name(slot.coin_symbol)}] 매수 신호가 발생했으나 가용 잔고 부족으로 스킵되었습니다.",
         )
+        return None
 
 
-def _place_sell(slot: _SlotSnapshot, position: dict[str, Any]) -> bool:
-    """슬롯이 보유한 몫만 시장가로 매도한다. 주문을 냈으면 True."""
+def _place_sell(slot: _SlotSnapshot, quantity: Decimal) -> bool:
+    """슬롯이 보유한 몫 안에서 `quantity`만큼 시장가로 매도한다. 주문을 냈으면 True."""
     with session_scope() as db:
-        quantity = _sellable_quantity(db, slot, position)
-    if quantity <= 0:
+        sellable = _sellable_quantity(db, slot, quantity)
+    if sellable <= 0:
         return False
 
     try:
@@ -280,7 +370,7 @@ def _place_sell(slot: _SlotSnapshot, position: dict[str, Any]) -> bool:
                 coin_symbol=slot.coin_symbol,
                 side="sell",
                 order_type="market",
-                quantity=quantity,
+                quantity=sellable,
                 source="auto",
                 strategy_slot_id=slot.id,
             )
@@ -292,16 +382,17 @@ def _place_sell(slot: _SlotSnapshot, position: dict[str, Any]) -> bool:
     return True
 
 
-def _sellable_quantity(db, slot: _SlotSnapshot, position: dict[str, Any]) -> Decimal:
-    """청산 가능 수량 = min(슬롯 포지션, 가용 코인 수량) (07-auto-trading.md 4.2절).
+def _sellable_quantity(db, slot: _SlotSnapshot, requested: Decimal) -> Decimal:
+    """실제로 팔 수량 = min(요청 수량, 슬롯 포지션, 가용 코인 수량) (07-auto-trading.md 4.2절).
 
     사용자가 같은 코인을 수동으로도 보유할 수 있으므로 슬롯이 매수한 몫을 넘겨 팔지 않는다.
     가용 수량(미체결 매도 주문분 제외, 01-erd.md 3.1절)으로 한 번 더 상한을 거는 이유는,
     슬롯 활성화 전에 낸 수동 지정가 매도가 남아 있으면 그만큼은 팔 수 없기 때문이다.
     """
-    slot_quantity = Decimal(position["quantity"])
+    position = slot_state.read_position(slot.state)
+    position_quantity = Decimal(position["quantity"]) if position else Decimal(0)
     available = get_available_quantity(db, slot.user_id, slot.coin_symbol)
-    return min(slot_quantity, available).quantize(_QUANTITY_STEP, rounding=ROUND_DOWN)
+    return min(requested, position_quantity, available).quantize(_QUANTITY_STEP, rounding=ROUND_DOWN)
 
 
 def _korean_name(coin_symbol: str) -> str:

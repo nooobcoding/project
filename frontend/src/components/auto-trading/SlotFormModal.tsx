@@ -24,6 +24,7 @@ interface SlotFormModalProps {
 const STRATEGY_TYPE_LABEL: Record<StrategyType, string> = {
   trend: "추세추종",
   counter_trend: "역추세",
+  grid: "그리드",
 };
 
 const INDICATOR_LABEL: Record<Indicator, string> = {
@@ -41,7 +42,8 @@ const INTERVAL_LABEL: Record<string, string> = {
   "1d": "일봉",
 };
 
-// 06-backtesting.md 2.2절 기본값. MA는 정해진 기본값이 없는 필수 입력이라 빈 문자열로 둔다.
+// 06-backtesting.md 2.2절 기본값. MA·그리드 가격대는 정해진 기본값이 없는 필수 입력이라
+// 빈 문자열로 둔다.
 function defaultParamValues() {
   return {
     interval: "1d",
@@ -54,6 +56,9 @@ function defaultParamValues() {
     overbought: "70",
     signal_period: "9",
     std_multiplier: "2.0",
+    lower_price: "",
+    upper_price: "",
+    grid_count: "5",
   };
 }
 
@@ -91,13 +96,23 @@ export function SlotFormModal({ coins, slot, onClose, onCreate, onUpdate }: Slot
   const setParam = (key: keyof ReturnType<typeof defaultParamValues>) => (value: string) =>
     setParamValues((prev) => ({ ...prev, [key]: value }));
 
+  const isGrid = strategyType === "grid";
+
   const requiredParamsFilled = useMemo(() => {
+    if (isGrid) {
+      return (
+        paramValues.lower_price !== "" &&
+        paramValues.upper_price !== "" &&
+        Number(paramValues.upper_price) > Number(paramValues.lower_price) &&
+        Number(paramValues.grid_count) >= 2
+      );
+    }
     if (indicator === "ma") {
       const base = paramValues.short_period !== "" && paramValues.long_period !== "";
       return strategyType === "counter_trend" ? base && paramValues.deviation_pct !== "" : base;
     }
     return true; // RSI/MACD/볼린저는 06 문서 기본값이 있어 항상 채워져 있다.
-  }, [indicator, strategyType, paramValues]);
+  }, [isGrid, indicator, strategyType, paramValues]);
 
   const isSubmitDisabled =
     isLockedForEdit ||
@@ -110,6 +125,14 @@ export function SlotFormModal({ coins, slot, onClose, onCreate, onUpdate }: Slot
   const buildParams = (): StrategyParams => {
     const p = paramValues;
     const interval = p.interval as CandleInterval;
+    if (isGrid) {
+      return {
+        interval,
+        lower_price: Number(p.lower_price || 0),
+        upper_price: Number(p.upper_price || 0),
+        grid_count: Number(p.grid_count || 5),
+      };
+    }
     if (indicator === "ma") {
       return strategyType === "trend"
         ? { interval, short_period: Number(p.short_period), long_period: Number(p.long_period) }
@@ -145,8 +168,8 @@ export function SlotFormModal({ coins, slot, onClose, onCreate, onUpdate }: Slot
     };
   };
 
-  const previewText = buildConditionText(strategyType, indicator, buildParams());
-  const exitText = buildExitText(stopLossPct, takeProfitPct);
+  const previewText = buildConditionText(strategyType, isGrid ? null : indicator, buildParams());
+  const exitText = buildExitText(strategyType, stopLossPct, takeProfitPct, buildParams());
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -157,11 +180,13 @@ export function SlotFormModal({ coins, slot, onClose, onCreate, onUpdate }: Slot
     const input: StrategySlotWriteInput = {
       coin_symbol: coinSymbol,
       strategy_type: strategyType,
-      indicator,
+      // 그리드는 지표를 쓰지 않는다 — 백엔드도 (grid, None) 조합만 받는다.
+      indicator: isGrid ? null : indicator,
       params: buildParams(),
       invest_amount: investAmount,
-      stop_loss_pct: stopLossPct || undefined,
-      take_profit_pct: takeProfitPct || undefined,
+      // 그리드의 손절은 하한가 이탈로 판정하고 익절은 라인별 실현이라 %필드를 보내지 않는다.
+      stop_loss_pct: isGrid ? undefined : stopLossPct || undefined,
+      take_profit_pct: isGrid ? undefined : takeProfitPct || undefined,
     };
     try {
       if (isEdit) {
@@ -210,19 +235,22 @@ export function SlotFormModal({ coins, slot, onClose, onCreate, onUpdate }: Slot
             ))}
           </div>
 
-          <div className="dashboard-tab-row">
-            {(Object.keys(INDICATOR_LABEL) as Indicator[]).map((ind) => (
-              <button
-                key={ind}
-                type="button"
-                className={indicator === ind ? "dashboard-tab is-active" : "dashboard-tab"}
-                onClick={() => setIndicator(ind)}
-                disabled={isLockedForEdit}
-              >
-                {INDICATOR_LABEL[ind]}
-              </button>
-            ))}
-          </div>
+          {/* 그리드는 지표를 쓰지 않는다 (06-backtesting.md 2.3절) */}
+          {!isGrid && (
+            <div className="dashboard-tab-row">
+              {(Object.keys(INDICATOR_LABEL) as Indicator[]).map((ind) => (
+                <button
+                  key={ind}
+                  type="button"
+                  className={indicator === ind ? "dashboard-tab is-active" : "dashboard-tab"}
+                  onClick={() => setIndicator(ind)}
+                  disabled={isLockedForEdit}
+                >
+                  {INDICATOR_LABEL[ind]}
+                </button>
+              ))}
+            </div>
+          )}
 
           <div className="settings-field">
             <label className="settings-field-label">봉단위</label>
@@ -241,7 +269,32 @@ export function SlotFormModal({ coins, slot, onClose, onCreate, onUpdate }: Slot
           </div>
 
           <div className="auto-param-grid">
-            {indicator === "ma" && (
+            {isGrid && (
+              <>
+                <NumberInput
+                  label="하한가"
+                  value={paramValues.lower_price}
+                  onChange={setParam("lower_price")}
+                  suffix="원"
+                  disabled={isLockedForEdit}
+                />
+                <NumberInput
+                  label="상한가"
+                  value={paramValues.upper_price}
+                  onChange={setParam("upper_price")}
+                  suffix="원"
+                  disabled={isLockedForEdit}
+                />
+                <NumberInput
+                  label="격자 수"
+                  value={paramValues.grid_count}
+                  onChange={setParam("grid_count")}
+                  disabled={isLockedForEdit}
+                />
+              </>
+            )}
+
+            {!isGrid && indicator === "ma" && (
               <>
                 <NumberInput
                   label="단기 기간"
@@ -267,7 +320,7 @@ export function SlotFormModal({ coins, slot, onClose, onCreate, onUpdate }: Slot
               </>
             )}
 
-            {indicator === "rsi" && (
+            {!isGrid && indicator === "rsi" && (
               <>
                 <NumberInput
                   label="RSI 기간"
@@ -301,7 +354,7 @@ export function SlotFormModal({ coins, slot, onClose, onCreate, onUpdate }: Slot
               </>
             )}
 
-            {indicator === "macd" && (
+            {!isGrid && indicator === "macd" && (
               <>
                 <NumberInput
                   label="단기 EMA"
@@ -324,7 +377,7 @@ export function SlotFormModal({ coins, slot, onClose, onCreate, onUpdate }: Slot
               </>
             )}
 
-            {indicator === "bollinger" && (
+            {!isGrid && indicator === "bollinger" && (
               <>
                 <NumberInput
                   label="기간"
@@ -350,22 +403,26 @@ export function SlotFormModal({ coins, slot, onClose, onCreate, onUpdate }: Slot
             disabled={isLockedForEdit}
           />
 
-          <div className="auto-param-grid">
-            <NumberInput
-              label="손절 (선택)"
-              value={stopLossPct}
-              onChange={setStopLossPct}
-              suffix="%"
-              disabled={isLockedForEdit}
-            />
-            <NumberInput
-              label="익절 (선택)"
-              value={takeProfitPct}
-              onChange={setTakeProfitPct}
-              suffix="%"
-              disabled={isLockedForEdit}
-            />
-          </div>
+          {/* 손절·익절은 전략유형별로 의미가 다르다 (06-backtesting.md 2.5절). 그리드는
+              하한가 이탈로 손절하고 익절은 라인별로 개별 실현하므로 %입력 자체가 없다. */}
+          {!isGrid && (
+            <div className="auto-param-grid">
+              <NumberInput
+                label="손절 (선택)"
+                value={stopLossPct}
+                onChange={setStopLossPct}
+                suffix="%"
+                disabled={isLockedForEdit}
+              />
+              <NumberInput
+                label="익절 (선택)"
+                value={takeProfitPct}
+                onChange={setTakeProfitPct}
+                suffix="%"
+                disabled={isLockedForEdit}
+              />
+            </div>
+          )}
 
           <div className="auto-preview-box">
             <p className="dashboard-card-label">전략 미리보기</p>

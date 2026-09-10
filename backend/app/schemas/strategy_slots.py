@@ -13,7 +13,7 @@ Pydantic 단계에서 거부된다 (services/strategy_slots.py의 동일한 제�
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 Interval = Literal["1m", "10m", "30m", "1h", "1d"]
 
@@ -69,8 +69,28 @@ class BollingerParams(BaseModel):
     std_multiplier: float = Field(default=2.0, gt=0)
 
 
-# (strategy_type, indicator) → 해당 조합의 파라미터 스키마.
-_PARAM_SCHEMAS: dict[tuple[str, str], type[BaseModel]] = {
+class GridParams(BaseModel):
+    """그리드 — 지표 없음 (06-backtesting.md 2.3절).
+
+    문서는 "그리드 간격(%), 상한가, 하한가, 격자 수" 넷을 나열하지만 상한·하한·격자 수가
+    정해지면 간격은 종속값이라 넷 다 자유 입력일 수 없다. 입력은 상한/하한/격자 수만 받고
+    간격은 화면에서 파생 표시한다 (app/strategy_engine/grid.py 참고).
+    """
+
+    interval: Interval
+    lower_price: float = Field(gt=0)
+    upper_price: float = Field(gt=0)
+    grid_count: int = Field(ge=2, le=100)
+
+    @model_validator(mode="after")
+    def validate_price_range(self) -> "GridParams":
+        if self.upper_price <= self.lower_price:
+            raise ValueError("상한가는 하한가보다 높아야 합니다.")
+        return self
+
+
+# (strategy_type, indicator) → 해당 조합의 파라미터 스키마. 그리드는 지표가 없어 키가 None이다.
+_PARAM_SCHEMAS: dict[tuple[str, str | None], type[BaseModel]] = {
     ("trend", "ma"): MaTrendParams,
     ("counter_trend", "ma"): MaCounterTrendParams,
     ("trend", "rsi"): RsiTrendParams,
@@ -79,6 +99,7 @@ _PARAM_SCHEMAS: dict[tuple[str, str], type[BaseModel]] = {
     ("counter_trend", "macd"): MacdParams,
     ("trend", "bollinger"): BollingerParams,
     ("counter_trend", "bollinger"): BollingerParams,
+    ("grid", None): GridParams,
 }
 
 
@@ -87,22 +108,25 @@ class StrategySlotWriteRequest(BaseModel):
     라우터가 `validate_params_for`로 조합별 스키마에 맞춰 다시 검증한다 — Pydantic은
     필드 값(strategy_type/indicator)에 따라 다른 모델로 분기 검증하는 것을 기본 지원하지
     않으므로, 이 구조가 가장 단순하다.
+
+    `indicator`는 그리드에서 None이다 (지표를 쓰지 않는다).
     """
 
     coin_symbol: str
-    strategy_type: Literal["trend", "counter_trend"]
-    indicator: Literal["ma", "rsi", "macd", "bollinger"]
+    strategy_type: Literal["trend", "counter_trend", "grid"]
+    indicator: Literal["ma", "rsi", "macd", "bollinger"] | None = None
     params: dict
     invest_amount: str
     stop_loss_pct: str | None = None
     take_profit_pct: str | None = None
 
 
-def validate_params_for(strategy_type: str, indicator: str, params: dict) -> dict:
+def validate_params_for(strategy_type: str, indicator: str | None, params: dict) -> dict:
     """(strategy_type, indicator) 조합에 맞는 파라미터 스키마로 검증하고 dict로 되돌린다.
 
     실패 시 pydantic.ValidationError를 그대로 전파한다 — 라우터가 이를 잡아 07 6장
-    "기준값은 0~100 사이의 값을 입력해주세요." 같은 메시지로 번역한다.
+    "기준값은 0~100 사이의 값을 입력해주세요." 같은 메시지로 번역한다. 조합 자체가 없는
+    경우(예: 그리드인데 지표를 함께 보낸 경우)는 KeyError가 되므로 라우터가 함께 처리한다.
     """
     schema = _PARAM_SCHEMAS[(strategy_type, indicator)]
     return schema(**params).model_dump()
@@ -140,7 +164,7 @@ class StrategySlotPatchRequest(BaseModel):
     두 종류를 한 요청에 섞지 않는다(라우터가 `is_active` 유무로 분기)."""
 
     is_active: bool | None = None
-    strategy_type: Literal["trend", "counter_trend"] | None = None
+    strategy_type: Literal["trend", "counter_trend", "grid"] | None = None
     indicator: Literal["ma", "rsi", "macd", "bollinger"] | None = None
     params: dict | None = None
     invest_amount: str | None = None

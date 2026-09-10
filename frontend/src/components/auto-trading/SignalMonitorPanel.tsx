@@ -10,6 +10,7 @@ interface SignalMonitorPanelProps {
 const STRATEGY_TYPE_LABEL: Record<string, string> = {
   trend: "추세추종",
   counter_trend: "역추세",
+  grid: "그리드",
 };
 
 const INDICATOR_LABEL: Record<string, string> = {
@@ -66,7 +67,7 @@ export function SignalMonitorPanel({ slots, coins, signals }: SignalMonitorPanel
                 </div>
                 <div className="auto-signal-card-meta">
                   <span>{STRATEGY_TYPE_LABEL[slot.strategy_type]}</span>
-                  <span>{INDICATOR_LABEL[slot.indicator]}</span>
+                  {slot.indicator && <span>{INDICATOR_LABEL[slot.indicator]}</span>}
                   {interval && <span>{INTERVAL_LABEL[interval] ?? interval}</span>}
                 </div>
                 {signal && (

@@ -118,6 +118,33 @@ def write_position(db: Session, slot_id: int, position: dict[str, Any] | None) -
     )
 
 
+def read_grid_lines(state: dict[str, Any] | None) -> list[dict[str, Any]] | None:
+    """state.grid.lines를 꺼낸다 (없으면 None — 워커가 초기화해야 한다는 뜻)."""
+    if not state:
+        return None
+    return (state.get("grid") or {}).get("lines")
+
+
+def write_grid_lines(db: Session, slot_id: int, lines: list[dict[str, Any]]) -> None:
+    """`state.grid`만 통째로 갱신한다 — 워커 소유 키다.
+
+    `jsonb_set(state, '{grid,lines}', ...)`이 아니라 `{grid}` 한 단계만 쓰는 이유: 중첩 경로는
+    부모(`grid`)가 이미 존재해야 동작해서 최초 초기화 때 조용히 실패한다. `grid` 객체 전체를
+    쓰더라도 `position` 등 다른 주체의 키는 건드리지 않으므로 소유권 경계는 그대로다.
+
+    `claim_candle`과 달리 커밋은 호출자에게 맡긴다 — 워커가 라인 갱신과 봉 선점을 각각 자기
+    트랜잭션에서 처리한다.
+    """
+    db.execute(
+        text(
+            "UPDATE strategy_slots "
+            "SET state = jsonb_set(state, '{grid}', CAST(:grid AS jsonb)) "
+            "WHERE id = :slot_id"
+        ),
+        {"slot_id": slot_id, "grid": _to_json({"lines": lines})},
+    )
+
+
 def claim_candle(db: Session, slot_id: int, candle_opened_at: datetime) -> bool:
     """확정봉 하나를 이 슬롯의 "평가 완료"로 선점한다 (07-auto-trading.md 4장 중복 평가 방지).
 

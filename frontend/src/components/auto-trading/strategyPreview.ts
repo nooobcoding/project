@@ -1,5 +1,6 @@
 import type {
   BollingerParams,
+  GridParams,
   Indicator,
   MacdParams,
   MaCounterTrendParams,
@@ -15,9 +16,22 @@ import type {
 // 그 파일의 각 함수 docstring과 1:1로 대응시킨다.
 export function buildConditionText(
   strategyType: StrategyType,
-  indicator: Indicator,
+  indicator: Indicator | null,
   params: StrategyParams,
 ): string {
+  if (strategyType === "grid") {
+    const p = params as GridParams;
+    // 간격(%)은 상한/하한/격자 수에서 따라 나오는 파생값이라 입력이 아니라 여기서 계산해 보여준다
+    // (backend/app/strategy_engine/grid.py 모듈 docstring 참고).
+    const step = (p.upper_price - p.lower_price) / p.grid_count;
+    const stepPct = p.lower_price > 0 ? (step / p.lower_price) * 100 : 0;
+    return (
+      `${p.lower_price.toLocaleString("ko-KR")}원~${p.upper_price.toLocaleString("ko-KR")}원을 ` +
+      `${p.grid_count}칸(칸당 약 ${step.toLocaleString("ko-KR")}원 · 하한가 대비 ${stepPct.toFixed(2)}%)으로 나눠, ` +
+      `가격이 한 칸 내려오면 그 칸을 매수하고 한 칸 오르면 매도합니다.`
+    );
+  }
+
   if (indicator === "ma") {
     if (strategyType === "trend") {
       const p = params as MaTrendParams;
@@ -51,7 +65,19 @@ export function buildConditionText(
     : `가격이 ${label} 하단에 닿거나 하회하면 매수, 상단에 닿거나 상회하면 매도합니다.`;
 }
 
-export function buildExitText(stopLossPct: string, takeProfitPct: string): string | null {
+// 손절·익절은 전략유형별로 의미가 다르다 (06-backtesting.md 2.5절). 그리드는 %기반 손절·익절이
+// 없고 "하한가 이탈 손절"만 있으며, 익절은 라인별로 개별 실현된다.
+export function buildExitText(
+  strategyType: StrategyType,
+  stopLossPct: string,
+  takeProfitPct: string,
+  params: StrategyParams,
+): string | null {
+  if (strategyType === "grid") {
+    const p = params as GridParams;
+    return `가격이 하한가(${p.lower_price.toLocaleString("ko-KR")}원) 아래로 떨어지면 보유분을 전량 청산합니다.`;
+  }
+
   const lines: string[] = [];
   if (stopLossPct) {
     lines.push(`진입가 대비 -${stopLossPct}% 도달 시 손절합니다.`);

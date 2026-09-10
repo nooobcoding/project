@@ -23,8 +23,10 @@ interface SlotListPanelProps {
 const STRATEGY_TYPE_LABEL: Record<string, string> = {
   trend: "추세추종",
   counter_trend: "역추세",
+  grid: "그리드",
 };
 
+// 그리드는 지표를 쓰지 않아 indicator가 null이다 — 배지 자체를 그리지 않는다.
 const INDICATOR_LABEL: Record<string, string> = {
   ma: "MA",
   rsi: "RSI",
@@ -92,7 +94,9 @@ export function SlotListPanel({
                 </div>
                 <div className="auto-slot-card-badges">
                   <span className="auto-slot-badge">{STRATEGY_TYPE_LABEL[slot.strategy_type]}</span>
-                  <span className="auto-slot-badge">{INDICATOR_LABEL[slot.indicator]}</span>
+                  {slot.indicator && (
+                    <span className="auto-slot-badge">{INDICATOR_LABEL[slot.indicator]}</span>
+                  )}
                 </div>
               </div>
               <div className="auto-slot-card-actions">
