@@ -31,7 +31,7 @@
 
 기존에는 봉단위가 지표별 파라미터 안에 흩어져 있었으나, 그리드·DCA는 지표가 없어 봉단위를 입력할 자리가 없었다. **봉단위를 전략 유형과 무관한 최상위 공통 설정**으로 올리고, `backtest_results.params` / `strategy_slots.params` JSONB의 최상위 키 `interval`로 고정한다. 값: `1m` / `10m` / `30m` / `1h` / `1d` ([01-erd.md](../01-erd.md) `candles.interval`과 동일 값 집합).
 
-**봉단위별 최대 조회 기간** (Upbit 캔들 API 1회 200개 제한 + 레이트리밋 하에서 30초 목표(FR-B05)를 지키기 위한 상한. 어떤 조합도 1만 봉 이내):
+**봉단위별 최대 조회 기간** (Upbit 캔들 API 1회 200개 제한 + 레이트리밋 하에서 60초 목표(FR-B05, 2026-09 확정 — 최초 30초에서 상향)를 지키기 위한 상한. 어떤 조합도 1만 봉 이내):
 
 | 봉단위 | 최대 기간 | 최대 캔들 수 | Upbit 호출 수(200개/회) |
 |---|---|---|---|
@@ -164,7 +164,7 @@ SMA·볼린저는 창 안에서 완결되는 계산이라 결과가 원래 동�
 | 초기 투자금 | Input (number) | 기본 10,000,000원 (01-auth 시드머니와 동일 값) |
 | 수수료율 | Input (number) | 기본 0.05% |
 | **슬리피지율** (신규) | Input (number) | 기본 0.1%. 체결가 = 이론가 × (1 ± 슬리피지율) |
-| 실행 버튼 | Button (Primary) | Progress Bar, 30초 이내 완료 목표 |
+| 실행 버튼 | Button (Primary) | Progress Bar, 60초(1분) 이내 완료 목표 |
 | 결과 저장 | Button (small) + **라벨 입력** (신규) | 기본 라벨 "{전략유형}-{지표}-{코인}-{저장일}" 자동 생성, 수정 가능 |
 | 결과 불러오기 | Button (small) | 라벨+저장일+요약수익률 목록 팝업 |
 
@@ -189,7 +189,7 @@ SMA·볼린저는 창 안에서 완결되는 계산이라 결과가 원래 동�
 |---|---|---|
 | 종료일 ≤ 시작일 | 종료일은 시작일 이후로 설정해주세요. | Date Picker 제한, 실행 버튼 비활성화 |
 | 봉단위별 최대 기간 초과 (신규) | (예) 1분봉은 최대 7일까지 조회할 수 있습니다. | 2.1-1절 표 기준, Date Picker 범위 제한 + 실행 버튼 비활성화 |
-| 백테스팅 타임아웃(30초) | 처리 시간이 초과되었습니다. 기간을 단축하거나 다시 시도해주세요. | Progress Bar 중단, 재시도 버튼 |
+| 백테스팅 타임아웃(60초, 2026-09 확정 — 최초 30초에서 상향) | 처리 시간이 초과되었습니다. 기간을 단축하거나 다시 시도해주세요. | Progress Bar 중단, 재시도 버튼 |
 | 기간 내 데이터 없음 | 선택한 기간의 시세 데이터가 없습니다. | 안내 메시지 |
 
 ---
@@ -219,12 +219,14 @@ backtest_results
   trade_count
   final_asset
   benchmark_return
-  equity_curve          jsonb     -- [{date, asset}] 시계열, 수익 곡선 차트 렌더링용 (NOT NULL)
+  equity_curve          jsonb     -- [{at, asset}] 시계열, 수익 곡선 차트 렌더링용 (NOT NULL)
+                                     -- at은 날짜가 아니라 ISO8601 시각이다(구현 중 정정) —
+                                     -- 분봉 백테스트는 하루에 여러 점이 나와 날짜로 접으면 곡선이 뭉개진다
   created_at
 
 backtest_trades         -- 수익 곡선의 매수/매도 마커 클릭 시 조회하는 체결 상세 (FR-B07)
   id (PK)
-  backtest_result_id (FK)
+  backtest_result_id (FK, ON DELETE CASCADE — 결과를 지우면 체결 상세도 함께 사라진다)
   side                  -- buy | sell
   price
   quantity
@@ -238,7 +240,7 @@ backtest_trades         -- 수익 곡선의 매수/매도 마커 클릭 시 조�
 
 | Method | Path | 설명 |
 |---|---|---|
-| POST | `/api/backtest/run` | 실행 (동기 응답, 프론트는 Progress Bar로 대기. 30초 초과 시 타임아웃 처리) |
+| POST | `/api/backtest/run` | 실행 (동기 응답, 프론트는 Progress Bar로 대기. 60초 초과 시 타임아웃 처리 — `services/backtest.py RUN_TIMEOUT_SECONDS`) |
 | POST | `/api/backtest/results` | 결과 저장 (라벨 포함) |
 | GET | `/api/backtest/results` | 저장 목록 |
 | GET | `/api/backtest/results/{id}` | 결과 상세 (설정값 복원용) |

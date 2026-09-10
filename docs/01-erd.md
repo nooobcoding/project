@@ -309,7 +309,7 @@ erDiagram
 | sharpe_ratio | NUMERIC(10,4) | | |
 | trade_count | INT | | |
 | final_asset | NUMERIC(20,4) | | |
-| equity_curve | JSONB | NOT NULL | `[{date, asset}]` 시계열 — 수익곡선 차트 렌더링용 |
+| equity_curve | JSONB | NOT NULL | `[{at, asset}]` 시계열 — 수익곡선 차트 렌더링용. `at`은 날짜가 아니라 ISO8601 **시각**이다(구현 중 정정) — 분봉 백테스트는 하루에 여러 점이 나오는데 날짜로 접으면 곡선이 뭉개지기 때문이다 |
 | created_at | TIMESTAMPTZ | NOT NULL | |
 
 ### `backtest_trades` — 백테스팅 체결 상세 (신규, `06-backtesting` FR-B07)
@@ -317,7 +317,7 @@ erDiagram
 | 컬럼 | 타입 | 제약 | 설명 |
 |---|---|---|---|
 | id | BIGSERIAL | PK | |
-| backtest_result_id | BIGINT | FK → backtest_results.id | |
+| backtest_result_id | BIGINT | FK → backtest_results.id **ON DELETE CASCADE** | 결과를 지우면 체결 상세도 함께 사라진다 — 체결 상세는 결과에 종속된 값이라 독립적으로 존재할 의미가 없다 |
 | side | VARCHAR(4) | CHECK IN ('buy','sell') | |
 | price | NUMERIC(20,8) | NOT NULL | |
 | quantity | NUMERIC(28,8) | NOT NULL | |
@@ -364,7 +364,7 @@ CREATE UNIQUE INDEX ux_strategy_slots_active_coin
 
 `UNIQUE (coin_symbol, interval, opened_at)`. 인덱스: `(coin_symbol, interval, opened_at)`.
 
-Upbit는 캔들 API를 1회 최대 200개로 제한하고 레이트리밋이 있어, 백테스팅 30초 목표(FR-B05)를 지키려면 최초 조회 시 DB에 캐싱하고 이후 요청은 캐시를 우선 사용한다. 캐시에 없는 최신 구간만 API로 보충한다.
+Upbit는 캔들 API를 1회 최대 200개로 제한하고 레이트리밋이 있어, 백테스팅 60초 목표(FR-B05, 2026-09 확정)를 지키려면 최초 조회 시 DB에 캐싱하고 이후 요청은 캐시를 우선 사용한다. 캐시에 없는 최신 구간만 API로 보충한다.
 
 ---
 

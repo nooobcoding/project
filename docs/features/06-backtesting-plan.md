@@ -143,7 +143,7 @@ def get_candles_in_range(db, symbol, interval, start, end) -> list[Candle]
 
 ---
 
-## Phase D — 스키마·API (Sonnet)
+## Phase D — 스키마·API (Sonnet) — **구현완료**
 
 **마이그레이션 1개** (`down_revision`은 현재 head): `backtest_results` + `backtest_trades`. 컬럼은 01-erd.md 정의 그대로(`equity_curve` JSONB NOT NULL 포함), `backtest_trades.backtest_result_id`는 **ON DELETE CASCADE**(결과를 지우면 체결 상세도 함께 사라져야 한다 — 07에서 배운 FK 삭제 동작 명시).
 
@@ -158,7 +158,14 @@ def get_candles_in_range(db, symbol, interval, start, end) -> list[Candle]
 
 - 파라미터 검증은 `schemas/strategy_slots.py`의 `validate_params_for`를 **그대로 재사용**한다 (전략유형×지표 조합별 스키마가 이미 있다).
 - `/run`이 결과를 저장하지 않고 `/results`가 클라이언트가 돌려준 결과를 받는 구조라, 이론상 클라이언트가 조작한 수치를 저장할 수 있다. 개인용 모의투자 도구 범위에서 감수하고 주석에 남긴다(다시 계산하면 중복 실행 비용이 든다).
-- 30초 초과 시 명확한 오류 메시지(06 4장). 실질적 방어는 Phase C의 기간 상한이다.
+- **60초**(사용자 결정으로 30초에서 상향, 2026-09) 초과 시 명확한 오류 메시지(06 4장). 실질적 방어는 Phase C의 기간 상한이다. `services/backtest.py`의 `ThreadPoolExecutor(max_workers=1)` + `future.result(timeout=60)`으로 구현 — `with` 블록으로 감싸면 `shutdown(wait=True)`가 오래 걸리는 계산이 끝날 때까지 블로킹해 타임아웃이 무의미해지므로, 타임아웃 시엔 반드시 `shutdown(wait=False)`로 즉시 손을 뗀다.
+
+**구현 시 확정한 사항** (계획 대비 구체화):
+- `invest_amount = initial_capital` — 백테스팅 설정 패널엔 "초기 투자금" 입력 하나뿐이라 전략유형별 `invest_amount` 의미(추세추종=1회 진입액/그리드=격자 총상한/DCA=분할매수 총상한)가 전부 이 값을 가리킨다.
+- `equity_curve` 저장 형식을 `{date, asset}` → `{at, asset}`(ISO datetime)로 정정 — 분봉 백테스트는 하루에 여러 점이 나와 날짜로 접으면 곡선이 뭉개진다 (01-erd.md·06-backtesting.md 5장 반영).
+- 엔진의 `BacktestTrade`(dataclass)와 모델의 `BacktestTrade`(ORM) 이름이 겹쳐 서비스·라우터에서 임포트 별칭(`BacktestTradeRow`)으로 구분한다.
+- 청산 사유(`reason`)는 API에 노출하지 않는다 — DB 컬럼도 없고 화면 스펙도 요구하지 않는다.
+- 이 프로젝트에 HTTP `TestClient` 테스트 선례가 없어(07도 서비스 함수 직접 호출 pytest + 실서버 수동 HTTP 검증 병행) 같은 방식을 따랐다: `tests/test_backtest_service_db.py`(서비스 계층, 16개) + 실행 중인 개발 서버 대상 Python 스크립트로 회원가입→BTC 실데이터 실행→저장→목록→상세→에러 케이스 전 구간 HTTP 검증.
 
 ---
 

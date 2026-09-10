@@ -84,9 +84,17 @@ def test_user(test_coin):
     yield user_id
 
     # FK 의존 순서대로 정리한다 — orders.strategy_slot_id가 strategy_slots를 참조하므로
-    # 슬롯보다 주문을 먼저 지워야 한다.
+    # 슬롯보다 주문을 먼저 지워야 한다. backtest_trades는 backtest_results를 ON DELETE CASCADE로
+    # 참조하므로 따로 지우지 않아도 함께 사라진다.
     with session_scope() as db:
-        for table in ("notifications", "orders", "holdings", "strategy_slots", "balances"):
+        for table in (
+            "notifications",
+            "orders",
+            "holdings",
+            "strategy_slots",
+            "backtest_results",
+            "balances",
+        ):
             db.execute(text(f"DELETE FROM {table} WHERE user_id = :user_id"), {"user_id": user_id})
         db.execute(text("DELETE FROM users WHERE id = :user_id"), {"user_id": user_id})
 

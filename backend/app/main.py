@@ -20,6 +20,7 @@ from app.config import settings
 from app.routers import (
     account,
     auth,
+    backtest,
     candles,
     coins,
     dashboard,
@@ -95,6 +96,7 @@ app.include_router(notification_settings.router)
 app.include_router(notifications.router)
 app.include_router(wallet.router)
 app.include_router(strategy_slots.router)
+app.include_router(backtest.router)
 
 
 @app.get("/health")
