@@ -12,7 +12,7 @@ from typing import Any
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from app.models import Balance, Coin, Notification, Order, StrategySlot
+from app.models import Balance, Coin, Holding, Notification, Order, StrategySlot
 from app.services import candles as candles_service
 from app.services import slot_state
 from app.services.orders import get_available_krw
@@ -196,6 +196,34 @@ def update_slot(
     return slot
 
 
+def _reconcile_phantom_position(db: Session, slot: StrategySlot) -> None:
+    """ON 시점에 `state.position`을 실제 보유 수량까지 낮춘다 (07-auto-trading.md 4.2절).
+
+    슬롯이 OFF인 동안에는 그 코인의 수동매매 잠금(FR-M10)이 풀리므로 사용자가 슬롯 보유분까지
+    팔 수 있다. 그대로 다시 켜면 슬롯은 있지도 않은 포지션을 들고 있다고 믿어 **재진입도 청산도
+    하지 못한다** — 엔진은 포지션이 있으니 새로 사지 않고, 청산하려 해도 매도 수량 상한이
+    `min(포지션, 가용 수량)=0`이라 주문이 나가지 않아 포지션이 영영 지워지지 않는다.
+
+    반대로 실제 보유량이 더 많은 경우(OFF 중 수동 매수)에는 올리지 않는다 — 수동 보유분은
+    슬롯의 관리 대상이 아니다.
+
+    `state.position`은 원래 체결 후처리만 쓰는 키지만(services/slot_state.py 소유권 표), 이
+    경로는 예외다: 호출자가 이미 `balances` 행을 FOR UPDATE로 잡고 있고 모든 체결도 같은 행을
+    잠그므로(09-execution-engine.md 3.4절) 그 잠금 안에서는 동시 체결이 있을 수 없다.
+    """
+    position = slot_state.read_position(slot.state)
+    if position is None:
+        return
+
+    holding = db.get(Holding, (slot.user_id, slot.coin_symbol))
+    actual_quantity = holding.quantity if holding is not None else Decimal(0)
+    if actual_quantity >= Decimal(position["quantity"]):
+        return
+
+    corrected = {**position, "quantity": str(actual_quantity)} if actual_quantity > 0 else None
+    slot_state.write_position(db, slot.id, corrected)
+
+
 def toggle_slot(db: Session, user_id: int, slot_id: int, is_active: bool) -> StrategySlot:
     """슬롯을 ON/OFF한다.
 
@@ -233,6 +261,9 @@ def toggle_slot(db: Session, user_id: int, slot_id: int, is_active: bool) -> Str
         raise DuplicateActiveSlotError()
     if slot.invest_amount > get_withdrawable_krw(db, user_id):
         raise InsufficientAllocatableBalanceError()
+
+    # 검증을 통과한 뒤에 보정한다 — ON이 거부되면 상태를 건드리지 않고 그대로 둔다.
+    _reconcile_phantom_position(db, slot)
 
     slot.is_active = True
     db.commit()

@@ -4,8 +4,15 @@
 
 | 키 | 쓰는 주체 |
 |---|---|
-| `state.position` | 체결 후처리(`services/matcher.py` `_apply_auto_trading_hook`)만 |
+| `state.position` | 체결 후처리(`services/matcher.py` `_apply_auto_trading_hook`)만 — 예외 1건은 아래 |
 | `state.last_evaluated_candle_at`, `state.grid.*`, `state.dca.*` | 워커(`app/strategy_engine/worker.py`)만 |
+
+**`state.position`의 유일한 예외**: 슬롯 ON 경로(`services/strategy_slots.py`
+`_reconcile_phantom_position`)가 실제 `holdings`와 어긋난 포지션을 낮춰 쓴다. OFF인 사이
+수동 매도로 사라진 몫이 남아 있으면 슬롯이 재진입도 청산도 못 하기 때문이다
+(07-auto-trading.md 4.2절). 그 경로는 `balances` 행을 FOR UPDATE로 잡은 뒤에 쓰는데,
+모든 체결도 같은 행을 잠그므로(09-execution-engine.md 3.4절) 그 잠금 안에서는 체결과
+동시에 실행될 수 없다.
 
 **왜 이 모듈이 따로 있나**: Python에서 `slot.state`를 통째로 읽어 dict를 고치고 다시 대입하는
 방식(read-modify-write)은, 읽은 시점과 쓰는 시점 사이에 다른 주체가 자기 키를 갱신했을 때 그

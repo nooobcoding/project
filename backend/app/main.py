@@ -28,6 +28,7 @@ from app.routers import (
     notifications,
     orderbook,
     orders,
+    portfolio,
     prices,
     strategy_slots,
     wallet,
@@ -97,6 +98,7 @@ app.include_router(notifications.router)
 app.include_router(wallet.router)
 app.include_router(strategy_slots.router)
 app.include_router(backtest.router)
+app.include_router(portfolio.router)
 
 
 @app.get("/health")

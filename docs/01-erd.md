@@ -428,7 +428,7 @@ Upbit는 캔들 API를 1회 최대 200개로 제한하고 레이트리밋이 있
 | 이벤트 | 처리 |
 |---|---|
 | 회원 탈퇴 (`04-settings`) | `users` 행 삭제, 하위 전 테이블 `ON DELETE CASCADE`로 함께 삭제 (하드 삭제) |
-| 모의투자 초기화 (`08-portfolio`) | 처리 순서: ① 활성(`is_active=true`) `strategy_slots`를 전부 `is_active=false`로 전환하고 `state`를 `{}`로 리셋 (진행 중이던 그리드/DCA 상태가 초기화된 `holdings`와 어긋나는 것을 방지) → ② `orders` / `holdings` / `deposits_withdrawals` 삭제 → ③ `balances`를 초기 시드머니 값으로 리셋. `users` / `backtest_results`, 그리고 `strategy_slots` 행 자체(설정값)는 보존 — 비활성화만 될 뿐 삭제되지 않는다 |
+| 모의투자 초기화 (`08-portfolio`) | **보류** — self-service 초기화는 프로젝트 방향과 맞지 않아 08 범위에서 제외했다 (사유·재검토 조건은 [08-portfolio.md](features/08-portfolio.md) 6장). 추후 관리자 기능으로 다시 설계할 때 처리 순서를 여기에 확정한다 — 그때 잠금 순서 규칙([09-execution-engine.md](features/09-execution-engine.md) 3.4절)을 따라야 한다는 점만 미리 남긴다 |
 
 ### 3.5 인덱스 요약
 
@@ -461,7 +461,7 @@ Upbit는 캔들 API를 1회 최대 200개로 제한하고 레이트리밋이 있
 - `grid`/`dca` 키는 해당 `strategy_type`일 때만 존재한다.
 - 모든 수치는 부동소수점 오차 방지를 위해 문자열로 저장한다 (3.3절 타입 컨벤션과 동일 취지).
 - 청산(손절·익절·그리드 이탈) 시 매도 수량은 `min(state.position.quantity, holdings.quantity)`로 상한을 건다 — 상세 규칙은 [07-auto-trading.md](features/07-auto-trading.md).
-- 슬롯 OFF 시 `state.position`은 유지한다 (재ON 시 이어서 관리). 모의투자 초기화 시에만 `{}`로 리셋한다 (3.4절).
+- 슬롯 OFF 시 `state.position`은 유지한다 (재ON 시 이어서 관리). 다만 OFF인 사이 그 코인을 수동 매도했을 수 있으므로, 재ON 시점에 `holdings.quantity`와 대조해 실제 보유량까지 낮춘다 ([07-auto-trading.md](features/07-auto-trading.md) 4.2절 — 보정하지 않으면 슬롯이 있지도 않은 포지션을 들고 있다고 믿어 재진입도 청산도 못 하게 된다).
 
 ### 3.7 예약가 주문 (`order_type='reserved'`)
 

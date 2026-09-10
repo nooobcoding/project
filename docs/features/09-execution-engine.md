@@ -66,6 +66,8 @@ WHERE id = $1 AND status='pending';
 
 **`state.position` 갱신은 이 체결 후처리 절차가 유일한 주체다.** 워커는 신호를 내고 주문을 요청할 뿐 `state.position`을 직접 쓰지 않는다 (워커가 직접 쓰는 것은 `state.last_evaluated_candle_at`, `state.grid.lines`의 라인 점유 표시, `state.dca.next_buy_at` 등 신호 판단용 상태뿐 — [07-auto-trading.md](07-auto-trading.md) 4장).
 
+예외는 슬롯 ON 경로 하나다. OFF인 사이 수동 매도로 사라진 몫이 `state.position`에 남아 있으면 슬롯이 재진입도 청산도 못 하므로, ON 시점에 실제 `holdings.quantity`까지 낮춘다 ([07-auto-trading.md](07-auto-trading.md) 4.2절). 그 경로는 `balances` 행을 `FOR UPDATE`로 잡은 뒤에 쓰는데 모든 체결도 같은 행을 잠그므로(3.4절), 체결과 동시에 실행될 수 없다.
+
 ### 3.3 취소
 
 `DELETE /api/orders/{id}` (03) 처리 시 `status='pending' → 'canceled'`로 전환. 체결 엔진과 동일한 조건부 `UPDATE`(`WHERE status='pending'`)로 매칭 경쟁을 방지한다 — 취소 요청과 체결 이벤트가 동시에 들어와도 둘 중 하나만 성공한다.
