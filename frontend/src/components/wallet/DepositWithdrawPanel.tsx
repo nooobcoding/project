@@ -3,7 +3,8 @@ import { ApiError } from "../../api/client";
 import { NumberInput } from "../NumberInput";
 import type { WalletBalance } from "../../types/wallet";
 
-// 05-deposit-withdraw.md 2-A — +10만/50만/100만/300만/500만/1,000만원, 클릭 시 누적
+// 05-deposit-withdraw.md 2-A — 10만/50만/100만/300만/500만/1,000만원, 클릭 시 누적.
+// 부호(+/-)는 type에 따라 화면에서 붙인다 — 값 자체는 항상 양수(금액의 절대값)다.
 const QUICK_AMOUNTS = [100000, 500000, 1000000, 3000000, 5000000, 10000000];
 
 type WalletTabType = "deposit" | "withdraw";
@@ -106,7 +107,8 @@ export function DepositWithdrawPanel({
               className="dashboard-chip-button"
               onClick={() => handleQuickAdd(value)}
             >
-              +{(value / 10000).toLocaleString("ko-KR")}만
+              {type === "deposit" ? "+" : "-"}
+              {(value / 10000).toLocaleString("ko-KR")}만
             </button>
           ))}
         </div>

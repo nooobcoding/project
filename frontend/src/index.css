@@ -1285,14 +1285,16 @@ body {
   font-weight: 600;
 }
 
+/* 입금/출금 색상은 .is-positive/.is-negative(상승 빨강/하락 녹색, 02-dashboard.md 관례)와
+   통일한다 — 입금은 잔고가 느는 방향(상승)이라 빨강, 출금은 주는 방향(하락)이라 녹색. */
 .wallet-tab.is-deposit.is-active {
-  border-color: var(--accent);
-  color: var(--accent);
+  border-color: var(--rise);
+  color: var(--rise);
 }
 
 .wallet-tab.is-withdraw.is-active {
-  border-color: var(--error);
-  color: var(--error);
+  border-color: var(--fall);
+  color: var(--fall);
 }
 
 .wallet-form {
@@ -1339,19 +1341,19 @@ body {
 }
 
 .wallet-submit-button.is-deposit {
-  background: var(--accent);
+  background: var(--rise);
 }
 
 .wallet-submit-button.is-deposit:hover:not(:disabled) {
-  background: var(--accent-hover);
+  background: #f26066;
 }
 
 .wallet-submit-button.is-withdraw {
-  background: var(--error);
+  background: var(--fall);
 }
 
 .wallet-submit-button.is-withdraw:hover:not(:disabled) {
-  background: #f26066;
+  background: var(--accent-hover);
 }
 
 .wallet-history-panel {
@@ -1430,13 +1432,13 @@ body {
 }
 
 .wallet-type-badge.is-deposit {
-  background: rgba(29, 158, 117, 0.15);
-  color: var(--accent);
+  background: rgba(229, 72, 77, 0.15);
+  color: var(--rise);
 }
 
 .wallet-type-badge.is-withdraw {
-  background: rgba(229, 72, 77, 0.15);
-  color: var(--error);
+  background: rgba(29, 158, 117, 0.15);
+  color: var(--fall);
 }
 
 .wallet-history-memo {
