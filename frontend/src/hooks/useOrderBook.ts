@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { PriceTick } from "../types/dashboard";
+import type { OrderBookSnapshot } from "../types/orderbook";
 
 const WS_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000").replace(
   /^http/,
@@ -8,16 +8,18 @@ const WS_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000
 const MAX_RECONNECT_ATTEMPTS = 3;
 const RECONNECT_DELAY_MS = 5000;
 
-export type PriceStreamStatus = "connecting" | "open" | "failed";
+export type OrderBookStatus = "connecting" | "open" | "failed";
 
-// 02-dashboard.md 3장 인터랙션 표 — WebSocket 연결 끊김 시 3회 5초 간격 재연결, 실패 시 배너.
-export function useWatchlistPrices(symbols: string[]) {
-  const [prices, setPrices] = useState<Record<string, PriceTick>>({});
-  const [status, setStatus] = useState<PriceStreamStatus>("connecting");
-  const symbolsKey = symbols.slice().sort().join(",");
+// 03-manual-trading 3열 호가창 — usePriceStream과 동일한 온디맨드 재연결 패턴을 따르되,
+// 대상이 여러 심볼(query string)이 아니라 화면이 보고 있는 심볼 하나(path param)다
+// (00-overview.md 3장 — 호가는 상시 구독 대상이 아니라 온디맨드로만 구독).
+export function useOrderBook(symbol: string | null) {
+  const [orderBook, setOrderBook] = useState<OrderBookSnapshot | null>(null);
+  const [status, setStatus] = useState<OrderBookStatus>("connecting");
 
   useEffect(() => {
-    if (symbolsKey === "") {
+    setOrderBook(null);
+    if (!symbol) {
       setStatus("open");
       return;
     }
@@ -29,15 +31,14 @@ export function useWatchlistPrices(symbols: string[]) {
 
     const connect = () => {
       setStatus("connecting");
-      socket = new WebSocket(`${WS_BASE_URL}/ws/prices?symbols=${symbolsKey}`);
+      socket = new WebSocket(`${WS_BASE_URL}/ws/orderbook/${encodeURIComponent(symbol)}`);
 
       socket.onopen = () => {
         attempt = 0;
         setStatus("open");
       };
       socket.onmessage = (event) => {
-        const tick: PriceTick = JSON.parse(event.data);
-        setPrices((prev) => ({ ...prev, [tick.symbol]: tick }));
+        setOrderBook(JSON.parse(event.data));
       };
       socket.onclose = () => {
         if (stopped) return;
@@ -62,7 +63,7 @@ export function useWatchlistPrices(symbols: string[]) {
       }
       socket?.close();
     };
-  }, [symbolsKey]);
+  }, [symbol]);
 
-  return { prices, status };
+  return { orderBook, status };
 }

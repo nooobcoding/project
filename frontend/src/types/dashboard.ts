@@ -28,5 +28,8 @@ export interface PriceTick {
   change: "RISE" | "EVEN" | "FALL";
   signed_change_rate: number;
   prev_closing_price: number;
+  high_price: number;
+  low_price: number;
+  acc_trade_volume_24h: number;
   timestamp: number;
 }

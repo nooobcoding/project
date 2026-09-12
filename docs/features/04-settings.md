@@ -1,6 +1,6 @@
 # 04. 공통 설정
 
-**상태**: 설계완료 · 구현 전
+**상태**: 구현중 (코드 작성 완료, 로컬 DB 마이그레이션·수동 검증 대기)
 **화면 ID**: SCR-08
 **의존성**: `01-auth`
 **연관 문서**: [00-overview.md](../00-overview.md) 6장 원칙 2(실 API 키 연동 없음), 3(알림 영속화)
@@ -74,10 +74,11 @@ notifications
 
 ---
 
-## 5. API 엔드포인트 (초안)
+## 5. API 엔드포인트
 
 | Method | Path | 설명 |
 |---|---|---|
+| GET | `/api/account` | 가입 이메일 조회 (2-A 표시용, 초안 이후 추가) |
 | PATCH | `/api/account/password` | 비밀번호 변경 |
 | DELETE | `/api/account` | 회원 탈퇴 |
 | GET | `/api/settings/notifications` | 알림 설정 조회 |
