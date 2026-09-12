@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import uuid
+from decimal import Decimal
 from typing import Iterable
 
 import websockets
@@ -18,6 +19,7 @@ from sqlalchemy import select
 
 from app.database import session_scope
 from app.models import Coin
+from app.services import matcher
 
 logger = logging.getLogger(__name__)
 
@@ -60,8 +62,20 @@ def _to_tick(message: dict, symbol: str) -> dict:
         "change": message["change"],
         "signed_change_rate": message["signed_change_rate"],
         "prev_closing_price": message["prev_closing_price"],
+        "high_price": message["high_price"],  # 03-manual-trading 당일 고가 표시용
+        "low_price": message["low_price"],  # 03-manual-trading 당일 저가 표시용
+        "acc_trade_volume_24h": message["acc_trade_volume_24h"],  # 03-manual-trading 24H 거래량 표시용
         "timestamp": message["timestamp"],
     }
+
+
+def _run_matcher_safely(symbol: str, trade_price) -> None:
+    """체결 엔진 훅 (09-execution-engine.md 2장). DB 장애가 상시 시세 스트림을
+    끊지 않도록 예외를 삼키고 로그만 남긴다 (main.py의 coin 동기화 잡과 동일 원칙)."""
+    try:
+        matcher.run_matching_for_symbol(symbol, Decimal(str(trade_price)))
+    except Exception:
+        logger.exception("체결 엔진 처리 실패 (symbol=%s)", symbol)
 
 
 async def _stream_once() -> None:
@@ -87,6 +101,8 @@ async def _stream_once() -> None:
             tick = _to_tick(message, symbol)
             _price_cache[symbol] = tick
             await _fan_out(symbol, tick)
+            # 체결 엔진 훅 — 동기 DB 작업이 이 상시 루프를 막지 않도록 별도 스레드에서 수행
+            await asyncio.to_thread(_run_matcher_safely, symbol, tick["trade_price"])
 
 
 async def run_price_stream() -> None:

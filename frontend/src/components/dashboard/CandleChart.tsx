@@ -10,15 +10,26 @@ import {
 } from "lightweight-charts";
 import { getCandles } from "../../api/candles";
 import { useAuth } from "../../hooks/useAuth";
+import type { CandleInterval } from "../../types/candles";
 import type { PriceTick } from "../../types/dashboard";
 
-const RISE_COLOR = "#1d9e75";
-const FALL_COLOR = "#e5484d";
-const DAY_SECONDS = 24 * 60 * 60;
+const RISE_COLOR = "#e5484d";
+const FALL_COLOR = "#1d9e75";
+
+// services/candles.py의 _INTERVAL_SECONDS와 1:1 대응 — 실시간 틱을 진행 중인 봉에 합칠 때
+// 어느 시각 구간(bucket)에 속하는지 판단하는 데 쓴다.
+const INTERVAL_SECONDS: Record<CandleInterval, number> = {
+  "1m": 60,
+  "10m": 600,
+  "30m": 1800,
+  "1h": 3600,
+  "1d": 86400,
+};
 
 interface CandleChartProps {
   symbol: string | null;
   tick: PriceTick | null;
+  interval: CandleInterval;
 }
 
 interface ChartPoint {
@@ -33,7 +44,7 @@ interface ChartPoint {
 // 실 과거 일봉(01-erd.md `candles`)을 GET /api/coins/{symbol}/candles로 불러와 채우고,
 // 그 위에 /ws/prices 틱으로 당일 봉만 실시간 갱신한다. 03-manual-trading이 그대로
 // 재사용할 인프라를 02에서 앞당겨 구현했다.
-export function CandleChart({ symbol, tick }: CandleChartProps) {
+export function CandleChart({ symbol, tick, interval }: CandleChartProps) {
   const { token } = useAuth();
   const [container, setContainer] = useState<HTMLDivElement | null>(null);
   const candleSeriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
@@ -90,7 +101,7 @@ export function CandleChart({ symbol, tick }: CandleChartProps) {
       return;
     }
     let cancelled = false;
-    getCandles(token, symbol, "1d")
+    getCandles(token, symbol, interval)
       .then((candles) => {
         if (cancelled) return;
         const points: ChartPoint[] = candles.map((candle) => ({
@@ -127,7 +138,7 @@ export function CandleChart({ symbol, tick }: CandleChartProps) {
     return () => {
       cancelled = true;
     };
-  }, [symbol, token, container]);
+  }, [symbol, token, container, interval]);
 
   useEffect(() => {
     if (!tick || tick.symbol !== symbol || !candleSeriesRef.current || !volumeSeriesRef.current) {
@@ -138,8 +149,9 @@ export function CandleChart({ symbol, tick }: CandleChartProps) {
       return;
     }
 
+    const intervalSeconds = INTERVAL_SECONDS[interval];
     const tickTime = Math.floor(tick.timestamp / 1000);
-    const bucketStart = (Math.floor(tickTime / DAY_SECONDS) * DAY_SECONDS) as UTCTimestamp;
+    const bucketStart = (Math.floor(tickTime / intervalSeconds) * intervalSeconds) as UTCTimestamp;
     const last = points[points.length - 1];
 
     if (last.time === bucketStart) {
@@ -173,10 +185,12 @@ export function CandleChart({ symbol, tick }: CandleChartProps) {
       value: updated.volume,
       color: updated.close >= updated.open ? RISE_COLOR : FALL_COLOR,
     });
-  }, [tick, symbol]);
+  }, [tick, symbol, interval]);
 
   if (!symbol) {
-    return <div className="dashboard-chart-empty">관심 코인을 추가하면 시세 차트가 표시됩니다.</div>;
+    // 대시보드는 관심 코인 추가 전, 03-manual-trading은 코인 목록 로딩 전에 각각 보일 수 있어
+    // 두 화면 모두에 맞는 일반적인 문구를 쓴다.
+    return <div className="dashboard-chart-empty">코인을 선택하면 시세 차트가 표시됩니다.</div>;
   }
 
   return <div ref={setContainer} className="dashboard-chart-container" />;

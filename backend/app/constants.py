@@ -7,3 +7,4 @@
 from decimal import Decimal
 
 INITIAL_SEED_KRW = Decimal("10000000")  # 01-auth.md 5장 — 가입 시 지급 시드머니
+TRADING_FEE_RATE = Decimal("0.0005")  # 01-erd.md 3.2절 — 체결 수수료율(소수 비율 단위, % 아님)

@@ -220,14 +220,16 @@ erDiagram
 | user_id | BIGINT | FK → users.id | |
 | coin_symbol | VARCHAR(10) | FK → coins.symbol | |
 | side | VARCHAR(4) | CHECK IN ('buy','sell') | |
-| order_type | VARCHAR(6) | CHECK IN ('limit','market') | |
-| price | NUMERIC(20,8) | NOT NULL | limit: 지정가 / market: 체결가(체결 후 기록) |
+| order_type | VARCHAR(8) | CHECK IN ('limit','market','reserved') | (신규) `reserved`(예약가) — 감시가격 도달 시 `limit`으로 승격만 되고 자체 체결 경로는 없음. 3.7절 참고 |
+| price | NUMERIC(20,8) | NOT NULL | limit/reserved: 지정가(주문가격) / market: 체결가(체결 후 기록) |
 | quantity | NUMERIC(28,8) | NOT NULL | |
 | status | VARCHAR(8) | CHECK IN ('pending','filled','canceled') | |
 | source | VARCHAR(6) | CHECK IN ('manual','auto') | |
-| strategy_slot_id | BIGINT | FK → strategy_slots.id, NULL 허용 | auto 체결일 때만 값 존재 |
+| strategy_slot_id | BIGINT | FK → strategy_slots.id, NULL 허용 | auto 체결일 때만 값 존재. **(03 구현 시 실제 DB엔 이 컬럼을 아직 추가하지 않음** — `strategy_slots` 테이블이 없어 FK 대상이 없으므로. 07 구현 시 컬럼·FK·인덱스를 함께 추가한다. 그 전까지 이 표는 목표 스키마이며 실제 `orders` 테이블과 다르다) |
 | realized_profit | NUMERIC(20,4) | NULL 허용 | (신규) `side='sell'`이 체결될 때, 체결 직전 `holdings.avg_buy_price` 기준 실현손익을 계산해 기록. 매수 행과 미체결 행은 NULL |
 | fee | NUMERIC(20,4) | NOT NULL DEFAULT 0 | (신규) 체결 수수료(원화). pending 동안 0, 체결 시 확정. 계산 규칙은 3.2절 |
+| trigger_price | NUMERIC(20,8) | NULL 허용 | (신규) 예약가 주문의 감시가격. `order_type='reserved'`가 아니면 항상 NULL |
+| trigger_direction | VARCHAR(7) | CHECK IN ('rising','falling'), NULL 허용 | (신규) 주문 생성 시점의 현재가 대비 감시가격 위치로 1회 확정. 3.7절 참고 |
 | created_at | TIMESTAMPTZ | NOT NULL | |
 | filled_at | TIMESTAMPTZ | NULL | pending 동안 NULL |
 
@@ -236,6 +238,8 @@ erDiagram
 **`realized_profit`을 둔 이유**: `08-portfolio`의 "월별 수익"(FR-P04)은 매도 시점의 실현손익을 기간별로 합산해야 한다. 매도 체결 로직(03/07 공용)이 `holdings`를 갱신하기 직전 시점의 `avg_buy_price`로 `(체결가 × (1 − 수수료율) − avg_buy_price) × 수량`을 계산해 이 컬럼에 남긴다 (3.2절). `backtest_trades.profit`과 동일한 목적의 컬럼을 실거래 쪽에도 대칭으로 둔 것이다.
 
 **`status` 전이 주체**: `pending → filled`/`canceled` 전환은 어느 화면 이벤트에서도 자동으로 일어나지 않으며, [09-execution-engine.md](features/09-execution-engine.md)의 체결 엔진(시세 스트림 훅)과 03의 취소 API가 유일한 실행 주체다.
+
+**가용잔고 잠금은 `order_type` 무관**: 3.1절의 가용 원화/가용 코인 수량 파생식은 `status='pending'`인 모든 매수/매도 주문을 `order_type`과 상관없이 합산한다 — 예약가 주문도 생성 즉시 지정가와 동일하게 잔고를 동결한다(트리거 도달 전이라도).
 
 ### `holdings` — 보유 코인 (`03-manual-trading`)
 
@@ -389,6 +393,8 @@ Upbit는 캔들 API를 1회 최대 200개로 제한하고 레이트리밋이 있
 
 **사용처**: `03-manual-trading`의 잔고 표시·주문 검증, `07-auto-trading`의 슬롯 실행 시점 재검증 → **가용 원화**. `05-deposit-withdraw`의 출금 검증, `07-auto-trading`의 슬롯 활성화(ON) 시점 검증 → **출금 가능액**. `08-portfolio`의 요약 카드는 가용 원화 기준.
 
+**동시성 주의**: 위 파생식은 조회 시점 값이라, "조회 → 검증 → INSERT/UPDATE" 사이에 틈이 있으면 동시에 들어온 두 요청이 서로의 동결분을 못 본 채 함께 통과해 잔고를 초과할 수 있다(TOCTOU). `services/orders.py`의 `create_order`는 검증 직전 `balances`(매수) 또는 `holdings`(매도) 행을 `SELECT ... FOR UPDATE`로 잠가 같은 유저의 동시 주문 생성을 직렬화한다 — 이 파생식을 새로 쓰는 05(출금 검증)·07(슬롯 활성화 검증)도 INSERT/UPDATE 직전에 동일하게 대상 행을 잠가야 한다.
+
 ### 3.2 체결 비용 규칙 (수수료)
 
 상수 `TRADING_FEE_RATE = 0.0005`(0.05%) — 백테스팅 `fee_rate` 기본값과 동일 **요율**을 쓰되 저장 단위가 다르다.
@@ -456,6 +462,15 @@ Upbit는 캔들 API를 1회 최대 200개로 제한하고 레이트리밋이 있
 - 모든 수치는 부동소수점 오차 방지를 위해 문자열로 저장한다 (3.3절 타입 컨벤션과 동일 취지).
 - 청산(손절·익절·그리드 이탈) 시 매도 수량은 `min(state.position.quantity, holdings.quantity)`로 상한을 건다 — 상세 규칙은 [07-auto-trading.md](features/07-auto-trading.md).
 - 슬롯 OFF 시 `state.position`은 유지한다 (재ON 시 이어서 관리). 모의투자 초기화 시에만 `{}`로 리셋한다 (3.4절).
+
+### 3.7 예약가 주문 (`order_type='reserved'`)
+
+업비트의 "예약가 주문"과 동일한 스탑 주문이다. 감시가격(`trigger_price`)에 현재가가 도달하면 주문가격(`price`)으로 지정가 주문이 자동 생성되는 방식 — 새 체결 경로를 만들지 않고 **기존 지정가 체결 인프라를 그대로 재사용**한다.
+
+1. 주문 생성 시점의 현재가와 감시가격을 비교해 `trigger_direction`을 1회 확정한다 — 감시가격이 현재가보다 높으면 `rising`(상승 돌파 대기), 낮으면 `falling`(하락 대기). 같으면 방향이 모호하므로 생성 자체를 거부한다. 이후 이 값을 그대로 쓰며 재계산하지 않는다.
+2. [09-execution-engine.md](features/09-execution-engine.md)의 체결 엔진이 매 시세 틱마다, 기존 지정가 매칭보다 먼저 예약가 주문을 검사한다: `rising`이면 현재가≥감시가격, `falling`이면 현재가≤감시가격일 때 조건 충족.
+3. 조건 충족 시 조건부 `UPDATE orders SET order_type='limit' WHERE id=... AND status='pending' AND order_type='reserved'`로 **`limit`으로 승격만** 시킨다 (체결 아님, 취소 요청과의 경쟁은 이 조건부 UPDATE로 방지). 승격 직후 같은 틱에서 기존 지정가 매칭이 이어서 실행되므로, 주문가격 조건까지 이미 만족하면 같은 틱에 체결까지 이어질 수 있다.
+4. 체결된 뒤에도 `order_type`은 `limit`으로 남고 `trigger_price`/`trigger_direction`은 이력으로 보존된다.
 
 ---
 

@@ -5,7 +5,10 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Balance, Coin, Watchlist
+from app.models import Balance, Coin, Holding, Order, Watchlist
+from app.services import price_stream
+from app.services.candles import CoinNotFoundError as CandleCoinNotFoundError
+from app.services.candles import get_candles
 
 MAX_WATCHLIST_SIZE = 5  # 02-dashboard.md 2-B — 관심 코인 최대 5개
 
@@ -25,17 +28,39 @@ class WatchlistFullError(Exception):
 def get_dashboard_summary(db: Session, user_id: int) -> dict[str, Decimal]:
     """총 평가금액 요약을 계산한다 (02-dashboard.md 2-A).
 
-    코인 평가액·평가손익(%)은 holdings 테이블이 아직 없어(03-manual-trading 미구현)
-    0으로 고정한다. 03 완료 후 `Σ(holdings.quantity × 현재가)` 및 전일 대비 손익
-    계산으로 교체한다.
+    코인 평가액은 Σ(holdings.quantity × 현재가), 평가손익(%)은 전일 대비
+    Σ(holdings.quantity × 현재가) − Σ(holdings.quantity × 전일종가) 로 계산한다
+    (전일종가는 candles(interval='1d')에서 조회, 별도 스냅샷 테이블 없음).
     """
     balance = db.get(Balance, user_id)
     krw_balance = balance.krw_balance if balance is not None else Decimal(0)
+
+    holdings = db.scalars(
+        select(Holding).where(Holding.user_id == user_id, Holding.quantity > 0)
+    ).all()
+
     coin_valuation = Decimal(0)
+    prev_valuation = Decimal(0)
+    for holding in holdings:
+        cached = price_stream.get_cached_price(holding.coin_symbol)
+        current_price = Decimal(str(cached["trade_price"])) if cached else holding.avg_buy_price
+        coin_valuation += holding.quantity * current_price
+
+        try:
+            recent_candles = get_candles(db, holding.coin_symbol, "1d", count=2)
+        except CandleCoinNotFoundError:
+            recent_candles = []
+        prev_close = recent_candles[0].close if len(recent_candles) >= 2 else current_price
+        prev_valuation += holding.quantity * prev_close
+
+    profit_pct = (
+        (coin_valuation - prev_valuation) / prev_valuation * 100 if prev_valuation > 0 else Decimal(0)
+    )
+
     return {
         "krw_balance": krw_balance,
         "coin_valuation": coin_valuation,
-        "profit_pct": Decimal(0),
+        "profit_pct": profit_pct,
     }
 
 
@@ -77,9 +102,21 @@ def remove_watchlist_item(db: Session, user_id: int, coin_symbol: str) -> None:
         db.commit()
 
 
-def list_recent_trades(db: Session, user_id: int) -> list:
-    """최근 체결 5건 (02-dashboard.md 2-C).
-
-    orders 테이블이 아직 없어(03-manual-trading 미구현) 항상 빈 목록을 반환한다.
-    """
-    return []
+def list_recent_trades(db: Session, user_id: int) -> list[dict]:
+    """최근 체결 5건 (02-dashboard.md 2-C)."""
+    orders = db.scalars(
+        select(Order)
+        .where(Order.user_id == user_id, Order.status == "filled")
+        .order_by(Order.filled_at.desc())
+        .limit(5)
+    ).all()
+    return [
+        {
+            "side": order.side,
+            "coin_symbol": order.coin_symbol,
+            "price": str(order.price),
+            "quantity": str(order.quantity),
+            "filled_at": order.filled_at,
+        }
+        for order in orders
+    ]

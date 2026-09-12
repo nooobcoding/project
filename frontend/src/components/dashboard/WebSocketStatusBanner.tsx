@@ -1,4 +1,4 @@
-import type { PriceStreamStatus } from "../../hooks/useWatchlistPrices";
+import type { PriceStreamStatus } from "../../hooks/usePriceStream";
 
 interface WebSocketStatusBannerProps {
   status: PriceStreamStatus;
