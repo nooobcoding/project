@@ -24,7 +24,7 @@ from app.models import (
     StrategySlot,
 )
 from app.services import notifications as notifications_service
-from app.services import slot_state
+from app.services import pending_symbols, slot_state
 from app.strategy_engine import costs
 
 # orders.fee NUMERIC(20,4) — 계산은 costs.py가 하고 컬럼 자릿수만 여기서 맞춘다.
@@ -281,10 +281,19 @@ def _promote_reserved_orders(symbol: str, current_price: Decimal) -> None:
 def run_matching_for_symbol(symbol: str, current_price: Decimal) -> None:
     """시세 캐시 갱신 이벤트를 받아 해당 심볼의 pending 지정가 주문을 매칭한다.
 
-    price_stream.py의 틱 수신 지점에서 호출된다 (09-execution-engine.md 2장).
+    확장판에서는 `matcher` 역할이 `ticks:{symbol}` 구독으로 호출한다 (matcher_runner.py).
+    단일 프로세스(memory 백엔드)에서는 지금까지처럼 시세 수신 루프가 직접 부른다.
+    **체결 절차 자체는 어느 쪽이든 동일하다** — 누가 부르느냐만 다르다
+    (02-market-data.md 4.1절).
+
     후보 조회와 개별 체결을 서로 다른 세션으로 분리해, 한 주문의 실패가 같은 틱에서
     매칭된 다른 주문에 영향을 주지 않게 한다.
     """
+    if not pending_symbols.has_pending(symbol):
+        # 미체결이 없는 심볼은 DB를 아예 안 본다 (02-market-data.md 4.2절). 힌트를 못 쓰는
+        # 상황에서는 항상 True가 오므로 지금까지와 동일하게 동작한다.
+        return
+
     _promote_reserved_orders(symbol, current_price)
 
     with session_scope() as db:
@@ -301,6 +310,7 @@ def run_matching_for_symbol(symbol: str, current_price: Decimal) -> None:
             )
         ]
 
+    filled_any = False
     for order_id, side, order_price in candidates:
         if not _limit_condition_met(side, order_price, current_price):
             continue
@@ -309,3 +319,8 @@ def run_matching_for_symbol(symbol: str, current_price: Decimal) -> None:
             if order is None or order.status != "pending":
                 continue
             fill_order(db, order, fill_price=order.price)
+            filled_any = True
+
+    if filled_any:
+        # 체결이 있었을 때만 확인한다 — 매 틱 확인하면 힌트로 아낀 DB 왕복이 도로 늘어난다.
+        pending_symbols.discard_if_settled(symbol)

@@ -33,8 +33,9 @@ from app.routers import (
     strategy_slots,
     wallet,
 )
-from app.services import price_cache, tick_bus
+from app.services import pending_symbols, price_cache, shard_coverage, tick_bus
 from app.services.coin_sync import sync_coins
+from app.services.matcher_runner import run_matcher
 from app.services.price_stream import run_market_data
 from app.strategy_engine.worker import TICK_INTERVAL_SECONDS, run_tick
 
@@ -43,12 +44,32 @@ logger = logging.getLogger(__name__)
 scheduler = BackgroundScheduler(timezone="Asia/Seoul")
 
 
+# pending_symbols 재구성 주기. 이 시간이 곧 "SADD를 놓쳤을 때 그 주문이 체결되지 않는
+# 최대 시간"이다 (02-market-data.md 4.2절).
+PENDING_SYMBOLS_REBUILD_SECONDS = 300
+SHARD_COVERAGE_CHECK_SECONDS = 60
+
+
 def _run_coin_sync_job() -> None:
     """coins 동기화 실행부. DB/Upbit 장애 시에도 서버·스케줄러는 계속 동작해야 한다."""
     try:
         sync_coins()
     except Exception:
         logger.exception("coins 동기화 실패")
+
+
+def _run_pending_symbols_rebuild_job() -> None:
+    try:
+        pending_symbols.rebuild()
+    except Exception:
+        logger.exception("pending_symbols 재구성 실패")
+
+
+def _run_shard_coverage_job() -> None:
+    try:
+        shard_coverage.check_matcher_shards()
+    except Exception:
+        logger.exception("샤드 커버리지 검사 실패")
 
 
 @asynccontextmanager
@@ -63,8 +84,9 @@ async def lifespan(app: FastAPI):
     전달해야 하기 때문이다. `memory`일 때는 같은 프로세스의 스트림이 직접 넣어주므로 구독할
     것이 없다 (services/tick_bus.py).
 
-    `matcher`는 아직 독립된 기동 경로가 없다 — 5단계까지 market-data의 시세 수신 루프 안에
-    묶여 있다 (00-architecture.md 1장 ③).
+    `matcher`도 `redis`일 때만 별도 기동 경로를 갖는다 — 틱을 구독해 자기 샤드의 체결을
+    처리한다. `memory`일 때는 pub/sub이 없어 구독할 것이 없으므로 지금까지처럼 시세 수신
+    루프가 직접 체결을 호출한다 (services/price_stream.py `_matches_inline`).
     """
     roles = settings.process_roles
 
@@ -74,6 +96,21 @@ async def lifespan(app: FastAPI):
     if "scheduler" in roles:
         _run_coin_sync_job()
         scheduler.add_job(_run_coin_sync_job, CronTrigger(hour=4, minute=0))
+        # pending_symbols는 힌트일 뿐이라 SADD 누락·Redis 유실로 새면 그 심볼의 주문이
+        # 영영 체결되지 않는다. 주기적 재구성이 그 유일한 복구 경로다 (02-market-data.md
+        # 4.2절). 커버리지 검사는 아무도 점유하지 않은 샤드를 잡는다 (06 3.4절).
+        scheduler.add_job(
+            _run_pending_symbols_rebuild_job,
+            IntervalTrigger(seconds=PENDING_SYMBOLS_REBUILD_SECONDS),
+            max_instances=1,
+            coalesce=True,
+        )
+        scheduler.add_job(
+            _run_shard_coverage_job,
+            IntervalTrigger(seconds=SHARD_COVERAGE_CHECK_SECONDS),
+            max_instances=1,
+            coalesce=True,
+        )
 
     if "worker" in roles:
         # max_instances=1은 필수다 — tick이 겹치면 같은 확정봉을 두 슬롯 순회가 동시에
@@ -93,6 +130,8 @@ async def lifespan(app: FastAPI):
         background_tasks.append(asyncio.create_task(run_market_data()))
     if "api" in roles and settings.price_cache_backend == "redis":
         background_tasks.append(asyncio.create_task(tick_bus.run_tick_subscriber()))
+    if "matcher" in roles and settings.price_cache_backend == "redis":
+        background_tasks.append(asyncio.create_task(run_matcher()))
 
     yield
 

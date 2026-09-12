@@ -43,6 +43,9 @@ _KEEPALIVE_ARGS = {
 ROLE_LEADER_NAMESPACE = 4001
 _ROLE_LOCK_IDS = {"market-data": 1}
 
+# 심볼 샤드 점유용 (02-market-data.md 4.3절). 7단계의 worker 샤드는 또 다른 값을 쓴다.
+MATCHER_SHARD_NAMESPACE = 4002
+
 
 @lru_cache
 def _leader_engine():
@@ -161,3 +164,122 @@ class LeaderLock:
             logger.warning("%s 리더 락 커넥션 정리 실패", self.role)
         finally:
             self._connection = None
+
+
+class ShardLocks:
+    """샤드 집합의 점유. 잡히는 샤드를 전부 가져가고, 못 잡은 것은 다음 주기에 다시 노린다.
+
+    **커넥션은 하나뿐이다.** advisory lock은 세션 단위라 한 세션이 여러 개를 동시에 쥘 수
+    있다 — 샤드마다 커넥션을 열면 `SHARD_COUNT`만큼 커넥션이 늘어나 커넥션 예산이 바로
+    깨진다 (00-architecture.md 3.5절).
+
+    재균형은 "주기적으로 못 잡은 샤드를 다시 시도"하는 것뿐이다. 프로세스가 죽으면 세션이
+    끊기며 그 샤드들이 자동으로 풀리고, 살아 있는 프로세스가 다음 주기에 집어간다. 프로세스를
+    추가하면 이미 점유된 샤드는 못 잡으므로 자연히 남은 것만 가져간다
+    (03-worker-orchestration.md 2.1절).
+    """
+
+    def __init__(self, namespace: int, shard_count: int, label: str) -> None:
+        self.namespace = namespace
+        self.shard_count = shard_count
+        self.label = label
+        self._owned: set[int] = set()
+        self._connection = None
+        self._guard = threading.Lock()
+
+    @property
+    def owned(self) -> set[int]:
+        return set(self._owned)
+
+    def refresh(self) -> set[int]:
+        """못 잡은 샤드를 다시 시도하고, 쥐고 있던 샤드의 소유를 재확인한다.
+
+        DB가 흔들리면 전부 놓은 것으로 보고한다 — 소유를 확신할 수 없는 상태에서 계속
+        일하는 것보다, 아무것도 점유하지 않은 상태로 떨어지고 다음 주기에 다시 잡는 편이
+        안전하다. 샤드가 비는 것 자체는 커버리지 경고가 잡는다 (06-observability.md 3.4절).
+        """
+        with self._guard:
+            try:
+                if self._connection is None:
+                    self._connection = _leader_engine().connect()
+                self._owned = self._verify_owned()
+                for shard_id in range(self.shard_count):
+                    if shard_id in self._owned:
+                        continue
+                    acquired = self._connection.execute(
+                        text("SELECT pg_try_advisory_lock(:namespace, :shard_id)"),
+                        {"namespace": self.namespace, "shard_id": shard_id},
+                    ).scalar()
+                    if acquired:
+                        self._owned.add(shard_id)
+            except Exception:
+                logger.warning("%s 샤드 점유 갱신 실패 — 전부 놓은 것으로 본다", self.label)
+                self._owned = set()
+                self._discard_connection()
+            return set(self._owned)
+
+    def _verify_owned(self) -> set[int]:
+        """이 세션이 실제로 쥐고 있는 샤드를 DB에 되묻는다. 커넥션이 끊겼다 재연결되면
+        애플리케이션 쪽 기록만 남고 락은 사라져 있을 수 있다 (2.2절 함정)."""
+        rows = self._connection.execute(
+            text(
+                """
+                SELECT objid FROM pg_locks
+                WHERE locktype = 'advisory'
+                  AND classid = :namespace
+                  AND objsubid = 2
+                  AND pid = pg_backend_pid()
+                  AND granted
+                """
+            ),
+            {"namespace": self.namespace},
+        ).scalars()
+        return {int(objid) for objid in rows}
+
+    def release_all(self) -> None:
+        with self._guard:
+            if self._connection is None:
+                return
+            try:
+                self._connection.execute(
+                    text("SELECT pg_advisory_unlock_all()")
+                )
+            except Exception:
+                logger.warning("%s 샤드 락 해제 실패 — 커넥션을 닫아 세션째 정리한다", self.label)
+            finally:
+                self._owned = set()
+                self._discard_connection()
+
+    def _discard_connection(self) -> None:
+        """호출부가 이미 `_guard`를 쥔 상태에서만 부른다."""
+        if self._connection is None:
+            return
+        try:
+            self._connection.close()
+        except Exception:
+            logger.warning("%s 샤드 락 커넥션 정리 실패", self.label)
+        finally:
+            self._connection = None
+
+
+def occupied_shards(namespace: int) -> set[int]:
+    """지금 누군가 점유하고 있는 샤드 전체 (프로세스 무관). 커버리지 검사용이다.
+
+    `worker_heartbeats`로는 빈 샤드를 못 찾는다 — 살아 있는 프로세스만 행을 남기므로
+    아무도 점유하지 않은 샤드는 행 자체가 없어서 아무 경고도 안 난다
+    (06-observability.md 3.4절). 그래서 락 자체를 직접 센다.
+    """
+    with _leader_engine().connect() as connection:
+        rows = connection.execute(
+            text(
+                """
+                SELECT objid FROM pg_locks
+                WHERE locktype = 'advisory'
+                  AND classid = :namespace
+                  AND objsubid = 2
+                  AND granted
+                """
+            ),
+            {"namespace": namespace},
+        ).scalars()
+        return {int(objid) for objid in rows}

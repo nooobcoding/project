@@ -48,6 +48,11 @@ class Settings(BaseSettings):
     # 초안값 30초 — 워커 tick(10초)보다는 커야 정상 상황에서 오탐이 안 나고, 손절이
     # 늦어지면 안 되므로 너무 크면 안 된다. 확정값은 06-observability.md 실측 후 조정한다.
     price_max_age_seconds: int = 30
+    # 확장판 00-architecture.md 3.1절 — matcher(심볼)·worker(유저)가 공유하는 샤드 수.
+    # **고정 상수로 다뤄야 한다.** 바꾸면 재해싱이 일어나 롤링 재시작 중 두 프로세스가 서로
+    # 다른 소유권을 계산한다. 초안 16이고, 확정은 06-observability.md의 실측 뒤로 미룬다
+    # (00-architecture.md 5장 열린 질문 1).
+    shard_count: int = 16
 
     @field_validator("cors_allowed_origins", "process_roles", mode="before")
     @classmethod

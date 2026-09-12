@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.constants import TRADING_FEE_RATE
 from app.models import Balance, Coin, Holding, Order, StrategySlot
-from app.services import matcher, price_cache
+from app.services import matcher, pending_symbols, price_cache
 
 
 class CoinNotFoundError(Exception):
@@ -206,6 +206,10 @@ def create_order(
         matcher.fill_order(db, order, fill_price=effective_price)
     else:
         db.commit()
+        # 커밋 뒤에 알린다 — 먼저 알리면 커밋이 실패했을 때 있지도 않은 주문 때문에
+        # matcher가 헛조회한다 (반대 순서의 누락이 훨씬 위험하므로 순서가 중요하다,
+        # 02-market-data.md 4.2절).
+        pending_symbols.add(coin_symbol)
 
     db.refresh(order)
     return order
@@ -226,6 +230,7 @@ def cancel_order(db: Session, user_id: int, order_id: int) -> None:
     db.commit()
     if result.rowcount == 0:
         raise OrderNotCancelableError()
+    pending_symbols.discard_if_settled(order.coin_symbol)
 
 
 def list_pending_orders(db: Session, user_id: int) -> list[Order]:

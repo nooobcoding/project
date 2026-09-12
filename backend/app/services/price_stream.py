@@ -28,6 +28,7 @@ from typing import Iterable
 import websockets
 from sqlalchemy import select
 
+from app.config import settings
 from app.database import session_scope
 from app.models import Coin
 from app.services import leader, matcher, price_cache, tick_bus
@@ -75,6 +76,17 @@ def _to_tick(message: dict, symbol: str) -> dict:
     }
 
 
+def _matches_inline() -> bool:
+    """체결을 이 루프 안에서 직접 할지 판단한다.
+
+    `redis` 백엔드에서는 `matcher` 역할이 `ticks:{symbol}`을 구독해서 처리하므로 여기서
+    또 부르면 같은 틱이 두 번 매칭된다(조건부 UPDATE가 중복 체결은 막지만 DB 왕복이 두 배가
+    된다). `memory` 백엔드는 pub/sub 자체가 없어 구독자가 있을 수 없으므로, 지금까지처럼
+    이 루프가 직접 부르는 것이 유일한 경로다 (02-market-data.md 4.1절).
+    """
+    return settings.price_cache_backend == "memory"
+
+
 def _run_matcher_safely(symbol: str, trade_price) -> None:
     """체결 엔진 훅 (09-execution-engine.md 2장). DB 장애가 상시 시세 스트림을
     끊지 않도록 예외를 삼키고 로그만 남긴다 (main.py의 coin 동기화 잡과 동일 원칙)."""
@@ -107,8 +119,9 @@ async def _stream_once() -> None:
             tick = _to_tick(message, symbol)
             await price_cache.store_tick(symbol, tick)
             await tick_bus.publish(symbol, tick)
-            # 체결 엔진 훅 — 동기 DB 작업이 이 상시 루프를 막지 않도록 별도 스레드에서 수행
-            await asyncio.to_thread(_run_matcher_safely, symbol, tick["trade_price"])
+            if _matches_inline():
+                # 체결 엔진 훅 — 동기 DB 작업이 이 상시 루프를 막지 않도록 별도 스레드에서 수행
+                await asyncio.to_thread(_run_matcher_safely, symbol, tick["trade_price"])
 
 
 async def run_price_stream() -> None:

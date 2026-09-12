@@ -96,23 +96,57 @@ async def run_tick_subscriber() -> None:
     `get_message()`로 도는 이유가 이것이다 — 다른 태스크가 같은 pubsub에 구독을 추가하는
     구조를 만들지 않기 위해서다.
     """
+    subscribed: set[str] = set()
+
+    async def sync(pubsub) -> bool:
+        nonlocal subscribed
+        desired = watched_symbols()
+        added = desired - subscribed
+        removed = subscribed - desired
+        if added:
+            await pubsub.subscribe(*(_channel(symbol) for symbol in added))
+        if removed:
+            await pubsub.unsubscribe(*(_channel(symbol) for symbol in removed))
+        subscribed = desired
+        return bool(subscribed)
+
+    def forget_subscriptions() -> None:
+        nonlocal subscribed
+        subscribed = set()
+
+    await consume_ticks(sync, deliver_local, on_reconnect=forget_subscriptions)
+
+
+async def consume_ticks(sync_subscriptions, on_tick, *, on_reconnect=None) -> None:
+    """틱 구독 루프 — 연결·폴링·재연결을 공통으로 처리한다.
+
+    `api`(프론트 팬아웃)와 `matcher`(체결)가 같은 채널을 서로 다른 이유로 구독하므로 이
+    골격만 공유한다.
+
+    - `sync_subscriptions(pubsub) -> bool`: 매 주기 구독 상태를 맞추고, 구독할 게 있는지
+      알려준다. 없으면 폴링만 한다 (pubsub에 구독이 하나도 없으면 연결 자체가 없다).
+    - `on_tick(symbol, tick)`: 틱 하나를 처리한다.
+    - `on_reconnect()`: 재연결로 pubsub이 새로 만들어질 때 호출 — 구독 상태를 기억하는
+      쪽이 그 기억을 버리게 한다. 안 버리면 "이미 구독했다"고 착각해 새 연결에 아무것도
+      구독하지 않고 조용히 멈춘다.
+    """
     while True:
         client = create_async_redis()
         pubsub = client.pubsub()
-        subscribed: set[str] = set()
         try:
             while True:
-                subscribed = await _sync_subscriptions(pubsub, subscribed)
-                if not subscribed:
-                    # 구독이 하나도 없으면 pubsub 연결 자체가 없다 — 붙은 클라이언트가
-                    # 생길 때까지 폴링만 한다.
+                has_subscriptions = await sync_subscriptions(pubsub)
+                if not has_subscriptions:
                     await asyncio.sleep(_SUBSCRIPTION_POLL_SECONDS)
                     continue
                 message = await pubsub.get_message(
                     ignore_subscribe_messages=True, timeout=_SUBSCRIPTION_POLL_SECONDS
                 )
-                if message is not None:
-                    await _deliver_message(message)
+                if message is None:
+                    continue
+                tick = _parse_tick(message)
+                if tick is not None:
+                    await on_tick(_symbol_of(message["channel"]), tick)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -123,24 +157,13 @@ async def run_tick_subscriber() -> None:
                 await pubsub.aclose()
             with contextlib.suppress(Exception):
                 await client.aclose()
+            if on_reconnect is not None:
+                on_reconnect()
 
 
-async def _sync_subscriptions(pubsub, subscribed: set[str]) -> set[str]:
-    """현재 구독을 클라이언트들이 보고 있는 심볼 집합에 맞춘다."""
-    desired = watched_symbols()
-    added = desired - subscribed
-    removed = subscribed - desired
-    if added:
-        await pubsub.subscribe(*(_channel(symbol) for symbol in added))
-    if removed:
-        await pubsub.unsubscribe(*(_channel(symbol) for symbol in removed))
-    return desired
-
-
-async def _deliver_message(message: dict) -> None:
+def _parse_tick(message: dict) -> dict | None:
     try:
-        tick = json.loads(message["data"])
+        return json.loads(message["data"])
     except (TypeError, ValueError):
         logger.warning("틱 메시지 파싱 실패 (channel=%s)", message.get("channel"))
-        return
-    await deliver_local(_symbol_of(message["channel"]), tick)
+        return None
