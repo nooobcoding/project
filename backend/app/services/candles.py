@@ -320,7 +320,11 @@ def get_confirmed_candles(
 
 
 def get_candles(db: Session, symbol: str, interval: Interval, count: int = DEFAULT_CANDLE_COUNT) -> list[Candle]:
-    """`(symbol, interval)`의 최신 `count`개 캔들을 오래된 순으로 반환한다."""
+    """`(symbol, interval)`의 최신 `count`개 캔들을 오래된 순으로 반환한다.
+
+    `count`는 **반환 개수만** 정한다 — 캐시에 적재하는 양은 호출자와 무관하게 항상
+    `DEFAULT_CANDLE_COUNT`다 (이유는 아래 재조회 분기의 주석 참고).
+    """
     coin = db.get(Coin, symbol)
     if coin is None or not coin.is_active:
         raise CoinNotFoundError()
@@ -342,7 +346,12 @@ def get_candles(db: Session, symbol: str, interval: Interval, count: int = DEFAU
     bucket_start = _current_bucket_start(interval, now)
 
     if not cached or cached[-1].opened_at < bucket_start:
-        raw_candles = _fetch_upbit_candles(coin.market_code, interval, count)
+        # 요청받은 `count`가 아니라 항상 최대치를 받아 캐시에 넣는다. 신선도 판정이 "최신 봉이
+        # 있는가"만 보기 때문에, count가 작은 호출(services/dashboard.py의 전일종가 조회는
+        # count=2)이 2개만 적재하면 그 캐시가 같은 날 내내 최신으로 판정된다 — 이후 200개를
+        # 요청하는 차트·워커가 그 2개만 돌려받고 굶는다(지표가 조용히 신호를 못 낸다).
+        # Upbit 호출 비용은 개수와 무관하게 1회로 같으므로 항상 최대치로 채워 둔다.
+        raw_candles = _fetch_upbit_candles(coin.market_code, interval, DEFAULT_CANDLE_COUNT)
         _upsert_candles(db, symbol, interval, raw_candles)
         cached = _load_cached()
 
