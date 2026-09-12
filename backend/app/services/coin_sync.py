@@ -11,13 +11,23 @@ from sqlalchemy import select
 
 from app.database import session_scope
 from app.models import Coin
+from app.services import rate_limit
 
 UPBIT_MARKET_ALL_URL = "https://api.upbit.com/v1/market/all"
 
 
 def fetch_krw_markets() -> list[dict]:
-    """Upbit 전체 마켓 목록에서 KRW 마켓만 필터링해 반환한다."""
+    """Upbit 전체 마켓 목록에서 KRW 마켓만 필터링해 반환한다.
+
+    하루 한 번뿐이지만 토큰 버킷을 거친다 — Upbit 레이트리밋은 엔드포인트가 아니라 IP
+    단위라, 예외를 하나 두면 "총량을 아는 주체가 하나"라는 6단계의 전제가 깨진다
+    (04-async-jobs.md 3.1절 표).
+    """
+    with rate_limit.priority("high"):
+        rate_limit.acquire()
     response = httpx.get(UPBIT_MARKET_ALL_URL, params={"isDetails": "false"}, timeout=10.0)
+    if response.status_code == 429:
+        rate_limit.note_throttled()
     response.raise_for_status()
     markets = response.json()
     return [market for market in markets if market["market"].startswith("KRW-")]

@@ -42,7 +42,9 @@ def _candles(*closes) -> list[_Candle]:
 def feed_candles(monkeypatch):
     def _feed(candles: list[_Candle]) -> None:
         monkeypatch.setattr(
-            candles_service, "get_confirmed_candles", lambda db, symbol, interval: candles
+            candles_service,
+            "get_confirmed_candles",
+            lambda db, symbol, interval, **kwargs: candles,
         )
 
     return _feed

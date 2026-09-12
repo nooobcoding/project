@@ -17,6 +17,10 @@ tick 1회가 슬롯 하나에 대해 하는 일은 두 가지이고, 트리거 �
 
 `state`의 어느 키를 누가 쓰는지는 services/slot_state.py 참고 — 워커는 `position`을 읽기만 하고
 절대 쓰지 않는다.
+
+**워커는 Upbit REST를 부르지 않는다** (확장판 6단계, docs-scale/03-worker-orchestration.md
+5.1절). 캔들은 DB 캐시만 읽고, 없으면 이번 tick 평가를 건너뛴 뒤 기록한다. 캐시를 채우는
+일은 `scheduler` 역할이 맡는다 (services/candle_prefill.py).
 """
 
 import logging
@@ -55,10 +59,24 @@ _QUANTITY_STEP = Decimal("0.00000001")  # orders.quantity NUMERIC(28,8)
 # 동시 접근이 없다(main.py 참고).
 _tick_skip_count = 0
 
+# 건너뛴 이유들. worker_heartbeats.skip_count는 합계 하나뿐이라, "왜 건너뛰었는지 구분
+# 가능해야 한다"(06-observability.md 5장 2항)는 로그가 감당한다. 이유를 상수로 묶어 두면
+# 로그를 이유별로 집계할 수 있다.
+SKIP_NO_CANDLES = "candles"
+SKIP_NO_PRICE = "price"
+SKIP_INSUFFICIENT_BALANCE = "balance"
+SKIP_INSUFFICIENT_HOLDING = "holding"
 
-def _record_skip() -> None:
+
+def _record_skip(reason: str, slot_id: int, detail: str = "") -> None:
+    """건너뛴 사실을 세고 이유를 남긴다.
+
+    숫자만 올리면 "스킵 12회"까지만 알 수 있고 "왜"는 알 수 없다. 자동매매에서 스킵은
+    "신호가 났는데 주문이 안 나갔다"는 뜻이라, 사용자에게는 침묵으로만 보인다.
+    """
     global _tick_skip_count
     _tick_skip_count += 1
+    logger.info("자동매매 워커: 슬롯 %s 건너뜀 (reason=%s)%s", slot_id, reason, detail)
 
 
 @dataclass
@@ -178,13 +196,13 @@ def _load_slot_snapshot(slot_id: int) -> _SlotSnapshot | None:
         )
 
 
-def _current_price(coin_symbol: str) -> Decimal | None:
+def _current_price(slot: "_SlotSnapshot") -> Decimal | None:
     """현재가를 읽는다. 시세가 없으면(스트림 중단·Redis 장애 등) None이고, 그 자체가
     "이번 tick에서 이 슬롯을 건너뛴다"는 뜻이라 여기서 한 번만 기록한다 — 호출부마다
     따로 세면 같은 코드가 세 군데로 흩어진다."""
-    tick = price_cache.get_cached_price(coin_symbol)
+    tick = price_cache.get_cached_price(slot.coin_symbol)
     if tick is None:
-        _record_skip()
+        _record_skip(SKIP_NO_PRICE, slot.id, f" symbol={slot.coin_symbol}")
         return None
     return Decimal(str(tick["trade_price"]))
 
@@ -212,7 +230,7 @@ def _try_exit(slot: _SlotSnapshot) -> bool:
     if position is None:
         return False
 
-    current_price = _current_price(slot.coin_symbol)
+    current_price = _current_price(slot)
     if current_price is None:
         return False
 
@@ -276,10 +294,19 @@ def _try_signal(slot: _SlotSnapshot) -> None:
     with session_scope() as db:
         candles = [
             _CandlePoint(opened_at=candle.opened_at, close=candle.close)
-            for candle in candles_service.get_confirmed_candles(db, slot.coin_symbol, interval)
+            for candle in candles_service.get_confirmed_candles(
+                db, slot.coin_symbol, interval, fetch_if_missing=False
+            )
         ]
     if len(candles) < 2:
-        _record_skip()
+        # **여기서 Upbit를 부르지 않는다** (확장판 6단계, 03-worker-orchestration.md 5.1절).
+        # 캐시 미스가 곧 블로킹 HTTP였고, 봉 경계 직후에는 활성 조합 수만큼 그 호출이
+        # 순차로 터져 tick 예산을 넘겼다. 채우는 일은 `scheduler`가 맡고(services/
+        # candle_prefill.py) 워커는 건너뛴다 — 이 스킵이 늘어난다면 그건 "채우기가 밀리고
+        # 있다"는 뜻이다 (06-observability.md 3장).
+        _record_skip(
+            SKIP_NO_CANDLES, slot.id, f" symbol={slot.coin_symbol} interval={interval}"
+        )
         return
 
     if slot.strategy_type == "grid" and _ensure_grid_lines(slot) is None:
@@ -299,7 +326,7 @@ def _try_signal(slot: _SlotSnapshot) -> None:
 
 def _try_dca(slot: _SlotSnapshot) -> None:
     """DCA의 매 tick 경로 — 정기 매수 시각이 됐거나 추가매수 조건이면 한 건 산다."""
-    current_price = _current_price(slot.coin_symbol)
+    current_price = _current_price(slot)
     if current_price is None:
         return  # 시세를 모르면 판정 자체가 불가능하다. 상태를 건드리지 않고 다음 tick에 재시도.
 
@@ -378,7 +405,7 @@ def _place_buy(slot: _SlotSnapshot, amount: Decimal) -> tuple[Decimal, Decimal] 
     if amount <= 0:
         return None
 
-    current_price = _current_price(slot.coin_symbol)
+    current_price = _current_price(slot)
     if current_price is None:
         return None
 
@@ -402,7 +429,7 @@ def _place_buy(slot: _SlotSnapshot, amount: Decimal) -> tuple[Decimal, Decimal] 
     except InsufficientBalanceError:
         # 활성화 시점엔 배정액이 확보돼 있었어도 그 사이 수동 출금 등으로 가용 원화가 줄어들 수
         # 있다. 이번 매수만 건너뛰고 슬롯은 ON으로 유지한다 (07-auto-trading.md 2.1절·6장).
-        _record_skip()
+        _record_skip(SKIP_INSUFFICIENT_BALANCE, slot.id)
         _notify(
             slot,
             "error",
@@ -433,8 +460,7 @@ def _place_sell(slot: _SlotSnapshot, quantity: Decimal) -> bool:
     except InsufficientHoldingError:
         # 가용 수량을 이미 상한으로 걸었으므로 정상 경로에서는 나오지 않는다. 그 사이 다른
         # 매도가 끼어든 경우이므로 이번 청산만 건너뛴다.
-        _record_skip()
-        logger.warning("자동매매 워커: 슬롯 %s 청산 수량 부족으로 스킵", slot.id)
+        _record_skip(SKIP_INSUFFICIENT_HOLDING, slot.id)
         return False
     return True
 

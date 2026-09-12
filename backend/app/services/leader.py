@@ -41,7 +41,7 @@ _KEEPALIVE_ARGS = {
 # advisory lock은 (classid, objid) 두 int로 식별한다. 역할 리더용 네임스페이스를 하나 잡아
 # 두고, 5·7단계의 샤드 점유(matcher·worker)는 각자 다른 네임스페이스를 쓴다.
 ROLE_LEADER_NAMESPACE = 4001
-_ROLE_LOCK_IDS = {"market-data": 1}
+_ROLE_LOCK_IDS = {"market-data": 1, "scheduler": 2}
 
 # 심볼 샤드 점유용 (02-market-data.md 4.3절). 7단계의 worker 샤드는 또 다른 값을 쓴다.
 MATCHER_SHARD_NAMESPACE = 4002
@@ -105,6 +105,21 @@ class LeaderLock:
                 # PostgreSQL 커넥션을 놀리게 된다 (00-architecture.md 3.5절 커넥션 예산).
                 self._discard_connection()
             return acquired
+
+    def hold(self) -> bool:
+        """지금 이 프로세스가 리더인지 — 아니면 한 번 시도해 본다. **반복 호출해도 안전하다.**
+
+        `try_acquire`를 주기적으로 부르면 안 된다. PostgreSQL advisory lock은 같은 세션이
+        다시 잠그면 거부하지 않고 **참조 횟수를 올린다** — 5번 부르면 `pg_advisory_unlock`
+        한 번으로는 안 풀린다(실측 확인). 지금은 `release`가 커넥션까지 닫아 세션째 정리하기
+        때문에 결과적으로 풀리지만, **락 해제가 unlock이 아니라 커넥션 종료에 의존하는
+        상태**를 20초짜리 잡 주기에 얹어 두는 것은 위험하다. `is_held`는 `pg_locks`를 볼 뿐
+        잠그지 않으므로 이미 리더인 경우에 부작용이 없고, 쓸데없는 왕복도 한 번 줄어든다.
+
+        `market-data`처럼 리더인 동안 계속 도는 역할이 아니라, `scheduler`처럼 **주기적으로
+        깨어나 매번 자격을 확인하는** 역할을 위한 것이다.
+        """
+        return self.is_held() or self.try_acquire()
 
     def is_held(self) -> bool:
         """이 세션이 실제로 락을 쥐고 있는지 DB에 되묻는다.

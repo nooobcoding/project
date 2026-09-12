@@ -9,6 +9,7 @@
 import asyncio
 import logging
 from contextlib import asynccontextmanager, suppress
+from datetime import datetime, timezone
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -33,7 +34,14 @@ from app.routers import (
     strategy_slots,
     wallet,
 )
-from app.services import pending_symbols, price_cache, shard_coverage, tick_bus
+from app.services import (
+    candle_prefill,
+    leader,
+    pending_symbols,
+    price_cache,
+    shard_coverage,
+    tick_bus,
+)
 from app.services.coin_sync import sync_coins
 from app.services.matcher_runner import run_matcher
 from app.services.price_stream import run_market_data
@@ -50,26 +58,46 @@ PENDING_SYMBOLS_REBUILD_SECONDS = 300
 SHARD_COVERAGE_CHECK_SECONDS = 60
 
 
-def _run_coin_sync_job() -> None:
-    """coins 동기화 실행부. DB/Upbit 장애 시에도 서버·스케줄러는 계속 동작해야 한다."""
-    try:
-        sync_coins()
-    except Exception:
-        logger.exception("coins 동기화 실패")
+# `scheduler` 역할은 정확히 1개만 활성이어야 한다 (00-architecture.md 2장 표). 6단계에서
+# Upbit REST 호출이 이 역할로 일원화되면서 그 요구가 실제 비용이 됐다 — scheduler 프로세스가
+# 둘이면 캔들 미리 채우기가 두 배로 돌아 토큰 버킷을 그만큼 헛되이 태운다.
+_scheduler_leader = leader.LeaderLock("scheduler")
+_was_leader: bool | None = None
 
 
-def _run_pending_symbols_rebuild_job() -> None:
-    try:
-        pending_symbols.rebuild()
-    except Exception:
-        logger.exception("pending_symbols 재구성 실패")
+def _leading() -> bool:
+    """이 프로세스가 `scheduler` 리더인지. 전환될 때만 로그를 남긴다 — 잡 주기가 20초라
+    매번 남기면 리더가 아닌 프로세스의 로그가 그 한 줄로 덮인다."""
+    global _was_leader
+    leading = _scheduler_leader.hold()
+    if leading != _was_leader:
+        logger.info(
+            "scheduler 리더 %s — 주기 잡을 %s",
+            "획득" if leading else "상실",
+            "실행한다" if leading else "건너뛴다",
+        )
+        _was_leader = leading
+    return leading
 
 
-def _run_shard_coverage_job() -> None:
-    try:
-        shard_coverage.check_matcher_shards()
-    except Exception:
-        logger.exception("샤드 커버리지 검사 실패")
+def _scheduler_job(name: str, run):
+    """리더일 때만 도는 `scheduler` 잡으로 감싼다.
+
+    예외를 삼키는 것은 여기 한 곳으로 모은다 — 잡 하나가 예외로 끝나면 APScheduler가 그
+    잡을 다시 부르지 않을 뿐 아니라, DB/Upbit 장애가 서버 전체를 멈추게 두어서는 안 된다
+    (00-overview.md 6장 1항 상시 실행 원칙).
+    """
+
+    def wrapped() -> None:
+        if not _leading():
+            return
+        try:
+            run()
+        except Exception:
+            logger.exception("%s 실패", name)
+
+    wrapped.__name__ = f"scheduler_job_{name}"
+    return wrapped
 
 
 @asynccontextmanager
@@ -87,6 +115,9 @@ async def lifespan(app: FastAPI):
     `matcher`도 `redis`일 때만 별도 기동 경로를 갖는다 — 틱을 구독해 자기 샤드의 체결을
     처리한다. `memory`일 때는 pub/sub이 없어 구독할 것이 없으므로 지금까지처럼 시세 수신
     루프가 직접 체결을 호출한다 (services/price_stream.py `_matches_inline`).
+
+    `scheduler`의 잡들은 전부 **리더로 선출된 프로세스에서만** 돈다 (`_scheduler_job`).
+    6단계에서 Upbit REST 호출이 이 역할로 일원화됐기 때문이다 (04-async-jobs.md 3장).
     """
     roles = settings.process_roles
 
@@ -94,19 +125,32 @@ async def lifespan(app: FastAPI):
         price_cache.warn_if_unfed("PROCESS_ROLES에 market-data가 없다")
 
     if "scheduler" in roles:
-        _run_coin_sync_job()
-        scheduler.add_job(_run_coin_sync_job, CronTrigger(hour=4, minute=0))
+        coin_sync_job = _scheduler_job("coins 동기화", sync_coins)
+        coin_sync_job()
+        scheduler.add_job(coin_sync_job, CronTrigger(hour=4, minute=0))
+        # 캔들 미리 채우기는 워커 tick에서 Upbit REST를 빼낸 대가다 — 이 잡이 밀리면 워커가
+        # 평가를 건너뛴다 (04-async-jobs.md 3.3절). 첫 tick이 빈 캐시를 보고 통째로 스킵하는
+        # 구간을 줄이려면 기동 직후 1회를 돌려야 하는데, **여기서 직접 부르면 안 된다** —
+        # 활성 조합 수만큼의 HTTP(+토큰 대기)가 lifespan을 막아 그동안 서버가 요청을 받지
+        # 못한다. `next_run_time`으로 스케줄러 스레드에서 즉시 돌린다.
+        scheduler.add_job(
+            _scheduler_job("캔들 미리 채우기", candle_prefill.run_prefill),
+            IntervalTrigger(seconds=candle_prefill.PREFILL_INTERVAL_SECONDS),
+            next_run_time=datetime.now(timezone.utc),
+            max_instances=1,
+            coalesce=True,
+        )
         # pending_symbols는 힌트일 뿐이라 SADD 누락·Redis 유실로 새면 그 심볼의 주문이
         # 영영 체결되지 않는다. 주기적 재구성이 그 유일한 복구 경로다 (02-market-data.md
         # 4.2절). 커버리지 검사는 아무도 점유하지 않은 샤드를 잡는다 (06 3.4절).
         scheduler.add_job(
-            _run_pending_symbols_rebuild_job,
+            _scheduler_job("pending_symbols 재구성", pending_symbols.rebuild),
             IntervalTrigger(seconds=PENDING_SYMBOLS_REBUILD_SECONDS),
             max_instances=1,
             coalesce=True,
         )
         scheduler.add_job(
-            _run_shard_coverage_job,
+            _scheduler_job("샤드 커버리지 검사", shard_coverage.check_matcher_shards),
             IntervalTrigger(seconds=SHARD_COVERAGE_CHECK_SECONDS),
             max_instances=1,
             coalesce=True,
@@ -141,6 +185,9 @@ async def lifespan(app: FastAPI):
         with suppress(asyncio.CancelledError):
             await task
     scheduler.shutdown()
+    # 락을 명시적으로 풀어 다음 scheduler 프로세스의 승격을 앞당긴다. 안 풀어도 세션이
+    # 끊기면 자동으로 풀리지만, 그때까지는 아무도 캔들을 채우지 않는다.
+    _scheduler_leader.release()
 
 
 app = FastAPI(title="코인 자동매매 프로그램 API", lifespan=lifespan)

@@ -53,6 +53,21 @@ class Settings(BaseSettings):
     # 다른 소유권을 계산한다. 초안 16이고, 확정은 06-observability.md의 실측 뒤로 미룬다
     # (00-architecture.md 5장 열린 질문 1).
     shard_count: int = 16
+    # 확장판 04-async-jobs.md 3.2절 — Upbit REST 호출량 토큰 버킷.
+    # Upbit 공개 시세 API 제한보다 **보수적으로** 잡는다. 제한에 딱 맞춰 두면 프로세스가
+    # 늘어날 때마다 429 경계에 붙게 되고, 429는 캔들 채우기와 백테스트가 함께 맞는다.
+    # 확정값은 06-observability.md 실측 뒤로 미룬다.
+    upbit_rest_tokens_per_second: float = 8.0
+    upbit_rest_burst: int = 10
+    # 총량 중 고우선(scheduler 캔들 채우기)이 갖는 몫. 나머지는 저우선(백테스트)이 쓴다.
+    # 워커의 신호 평가가 캔들 채우기에 걸려 있으므로, 굶어야 한다면 백테스트가 굶는다
+    # (04-async-jobs.md 3.2절 우선순위).
+    upbit_rest_high_share: float = 0.6
+    # 토큰을 이만큼 기다려도 못 받으면 예외로 실패시킨다. 무한 대기는 호출 스레드를 통째로
+    # 묶어 두는데(백테스트 스레드·스케줄러 잡) 그 상태는 아무 흔적도 남기지 않는다.
+    upbit_rest_wait_timeout_seconds: float = 30.0
+    # 429를 받으면 이 시간 동안 리필 속도를 낮춘다 (같은 절의 자동 백오프).
+    upbit_rest_throttle_backoff_seconds: int = 60
 
     @field_validator("cors_allowed_origins", "process_roles", mode="before")
     @classmethod

@@ -9,6 +9,14 @@ Upbit 캔들 REST는 1회 최대 200개·레이트리밋이 있어, 최초 조�
   - `get_candles` / `get_confirmed_candles` — "최신 N개". 02-dashboard 차트와 07 워커가 쓴다.
   - `get_candles_in_range` — "기간 지정". 06-backtesting이 쓴다 (06 계획 Phase C). Upbit의
     `to` 파라미터로 과거로 거슬러 페이지네이션하며, 캐시에 없는 구간만 채운다.
+
+확장판 6단계에서 **Upbit REST 호출이 이 모듈로 일원화됐다** (04-async-jobs.md 3장):
+
+  - 호출은 전부 `_fetch_upbit_candles` 한 곳을 지나고, 거기서 토큰 버킷을 통과한다
+    (services/rate_limit.py). 호출 주체가 늘어나도 총량이 새지 않는 유일한 보장이다.
+  - 캐시를 **채우는** 주체는 `scheduler` 역할이다 (services/candle_prefill.py).
+  - 워커는 `fetch_if_missing=False`로 DB 캐시만 읽는다 — tick 중 블로킹 HTTP를 없애는
+    것이 6단계의 목적이다 (03-worker-orchestration.md 5.1절).
 """
 
 import time
@@ -21,6 +29,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import Candle, Coin
+from app.services import rate_limit
 
 Interval = Literal["1m", "10m", "30m", "1h", "1d"]
 
@@ -129,7 +138,14 @@ def _fetch_upbit_candles(
     if to is not None:
         params["to"] = to.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
+    # 이 함수가 이 프로젝트에서 Upbit 캔들 REST를 치는 **유일한 지점**이다. 토큰 버킷을
+    # 여기 한 곳에 걸어야 호출 주체가 늘어나도 총량이 새지 않는다 (04-async-jobs.md 3.2절).
+    rate_limit.acquire()
     response = _client().get(_upbit_candle_url(interval), params=params)
+    if response.status_code == 429:
+        # 429를 그냥 raise_for_status로 흘려보내면 같은 속도로 계속 두드리게 된다.
+        # 버킷에 알려 리필 속도를 낮춘 뒤에 예외를 올린다.
+        rate_limit.note_throttled()
     response.raise_for_status()
     return response.json()
 
@@ -306,24 +322,45 @@ def _fill_range(
 
 
 def get_confirmed_candles(
-    db: Session, symbol: str, interval: Interval, count: int = DEFAULT_CANDLE_COUNT
+    db: Session,
+    symbol: str,
+    interval: Interval,
+    count: int = DEFAULT_CANDLE_COUNT,
+    *,
+    fetch_if_missing: bool = True,
 ) -> list[Candle]:
     """`get_candles`와 동일하되, 아직 진행 중인(미확정) 마지막 봉을 잘라내고 반환한다.
 
     07-auto-trading은 확정봉만 신호 판정에 써야 한다(07-auto-trading.md 4장) — 진행 중인
     봉은 아직 값이 바뀔 수 있어 같은 시각에 여러 번 다른 신호를 낼 수 있기 때문이다.
     `services/strategy_slots.py`의 신호 미리보기 조회와 07 Step 2B 워커 tick이 함께 쓴다.
+
+    `fetch_if_missing=False`는 워커 전용이다 — 이유는 `get_candles` docstring 참고.
     """
-    fetched = get_candles(db, symbol, interval, count)
+    fetched = get_candles(db, symbol, interval, count, fetch_if_missing=fetch_if_missing)
     bucket_start = _current_bucket_start(interval, datetime.now(timezone.utc))
     return [candle for candle in fetched if candle.opened_at < bucket_start]
 
 
-def get_candles(db: Session, symbol: str, interval: Interval, count: int = DEFAULT_CANDLE_COUNT) -> list[Candle]:
+def get_candles(
+    db: Session,
+    symbol: str,
+    interval: Interval,
+    count: int = DEFAULT_CANDLE_COUNT,
+    *,
+    fetch_if_missing: bool = True,
+) -> list[Candle]:
     """`(symbol, interval)`의 최신 `count`개 캔들을 오래된 순으로 반환한다.
 
     `count`는 **반환 개수만** 정한다 — 캐시에 적재하는 양은 호출자와 무관하게 항상
     `DEFAULT_CANDLE_COUNT`다 (이유는 아래 재조회 분기의 주석 참고).
+
+    `fetch_if_missing=False`면 **DB 캐시만 읽고 Upbit를 부르지 않는다.** 워커 tick이
+    이 경로를 쓴다 (확장판 03-worker-orchestration.md 5.1절): 캐시 미스가 곧 블로킹
+    HTTP였고, 서로 다른 코인 50종에 1분봉을 걸면 매 분 정각에 50회 × 0.27초 ≈ 13.5초로
+    10초 tick 예산을 넘긴다. 캐시를 채우는 일은 `scheduler`의 캔들 미리 채우기
+    (services/candle_prefill.py)가 맡고, 워커는 없으면 **이번 tick 평가를 건너뛰고
+    기록한다.**
     """
     coin = db.get(Coin, symbol)
     if coin is None or not coin.is_active:
@@ -345,7 +382,7 @@ def get_candles(db: Session, symbol: str, interval: Interval, count: int = DEFAU
     now = datetime.now(timezone.utc)
     bucket_start = _current_bucket_start(interval, now)
 
-    if not cached or cached[-1].opened_at < bucket_start:
+    if fetch_if_missing and (not cached or cached[-1].opened_at < bucket_start):
         # 요청받은 `count`가 아니라 항상 최대치를 받아 캐시에 넣는다. 신선도 판정이 "최신 봉이
         # 있는가"만 보기 때문에, count가 작은 호출(services/dashboard.py의 전일종가 조회는
         # count=2)이 2개만 적재하면 그 캐시가 같은 날 내내 최신으로 판정된다 — 이후 200개를
