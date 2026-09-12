@@ -101,7 +101,9 @@ async def _stream_once() -> None:
             if symbol is None:
                 continue
             tick = _to_tick(message, symbol)
-            price_cache.set_price(symbol, tick)
+            # memory 백엔드는 dict 대입이라 즉시 반환하지만, redis 백엔드는 소켓 I/O라
+            # 이 상시 루프를 막을 수 있다 — to_thread로 감싼다 (아래 매칭 훅과 동일 원칙).
+            await asyncio.to_thread(price_cache.set_price, symbol, tick)
             await _fan_out(symbol, tick)
             # 체결 엔진 훅 — 동기 DB 작업이 이 상시 루프를 막지 않도록 별도 스레드에서 수행
             await asyncio.to_thread(_run_matcher_safely, symbol, tick["trade_price"])

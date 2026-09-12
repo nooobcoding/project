@@ -37,9 +37,10 @@ services:
     ports:
       - "8000:8000"
     depends_on:
+      # redis는 여기 없다 — PRICE_CACHE_BACKEND=memory가 기본값이라 backend는 지금 Redis를
+      # 전혀 안 쓴다. redis:service_healthy를 넣으면 로컬 개발이 안 쓰는 의존성 때문에
+      # 기동이 느려지거나 막힌다. PRICE_CACHE_BACKEND=redis로 직접 켤 때만 붙으면 된다.
       postgres:
-        condition: service_healthy
-      redis:
         condition: service_healthy
     volumes:
       - ./backend/app:/app/app

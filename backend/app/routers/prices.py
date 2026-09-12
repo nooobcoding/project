@@ -22,8 +22,12 @@ async def stream_prices(websocket: WebSocket) -> None:
     }
     await websocket.accept()
 
-    for symbol in symbols:
-        cached = price_cache.get_cached_price(symbol)
+    # redis 백엔드에서는 조회가 소켓 I/O라 이벤트 루프를 막을 수 있으므로 스레드로 감싼다
+    # (memory 백엔드에서는 dict 조회라 사실상 즉시 반환한다).
+    cached_prices = await asyncio.gather(
+        *(asyncio.to_thread(price_cache.get_cached_price, symbol) for symbol in symbols)
+    )
+    for cached in cached_prices:
         if cached is not None:
             await websocket.send_json(cached)
 
