@@ -117,16 +117,21 @@ def run_tick() -> None:
             error_count += 1
 
     duration_ms = int((time.monotonic() - tick_start) * 1000)
-    heartbeat.record_tick(
-        role="worker",
-        shard_id=None,
-        started_at=started_at,
-        duration_ms=duration_ms,
-        budget_ms=TICK_INTERVAL_SECONDS * 1000,
-        item_count=len(slot_ids),
-        error_count=error_count,
-        skip_count=_tick_skip_count,
-    )
+    try:
+        heartbeat.record_tick(
+            role="worker",
+            shard_id=None,
+            started_at=started_at,
+            duration_ms=duration_ms,
+            budget_ms=TICK_INTERVAL_SECONDS * 1000,
+            item_count=len(slot_ids),
+            error_count=error_count,
+            skip_count=_tick_skip_count,
+        )
+    except Exception:
+        # 관측이 관측 대상을 망가뜨려서는 안 된다 — DB가 잠깐 흔들리거나 마이그레이션이
+        # 아직 안 올라갔다고 해서 tick 잡이 예외로 끝나면 안 된다.
+        logger.exception("자동매매 워커: heartbeat 기록 실패")
 
 
 def process_slot(slot_id: int) -> None:

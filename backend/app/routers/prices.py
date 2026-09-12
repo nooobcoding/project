@@ -26,14 +26,12 @@ async def stream_prices(websocket: WebSocket) -> None:
     }
     await websocket.accept()
 
-    # redis 백엔드에서는 조회가 소켓 I/O라 이벤트 루프를 막을 수 있으므로 스레드로 감싼다
-    # (memory 백엔드에서는 dict 조회라 사실상 즉시 반환한다).
-    cached_prices = await asyncio.gather(
-        *(asyncio.to_thread(price_cache.get_cached_price, symbol) for symbol in symbols)
-    )
-    for cached in cached_prices:
-        if cached is not None:
-            await websocket.send_json(cached)
+    # 대시보드는 접속 한 번에 상장 심볼 전체를 요청한다 — 심볼마다 조회하면 그 수만큼
+    # Redis 왕복과 스레드 전환이 생기므로 한 번에 묶어 읽는다. redis 백엔드에서는 소켓
+    # I/O라 이벤트 루프를 막지 않도록 스레드로 감싼다.
+    cached_prices = await asyncio.to_thread(price_cache.get_cached_prices, symbols)
+    for cached in cached_prices.values():
+        await websocket.send_json(cached)
 
     queue = await tick_bus.register(websocket, symbols)
     try:

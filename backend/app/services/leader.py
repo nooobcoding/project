@@ -17,6 +17,7 @@ SQLAlchemy 커넥션 풀이 커넥션을 반납·재활용하면 락이 풀리�
 """
 
 import logging
+import threading
 from functools import lru_cache
 
 from sqlalchemy import create_engine, text
@@ -25,6 +26,17 @@ from sqlalchemy.pool import NullPool
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+# 리더 호스트가 통째로 죽거나 네트워크가 끊기면 FIN이 안 가므로, PostgreSQL은 세션이 죽은
+# 줄 모르고 락을 계속 쥐고 있다 — OS 기본 keepalive(리눅스 약 2시간)까지 아무도 승격하지
+# 못한다. libpq keepalive를 직접 걸어 1분 안에 끊기게 한다. 프로세스만 죽는 경우는 FIN이
+# 가므로 지금도 즉시 풀린다.
+_KEEPALIVE_ARGS = {
+    "keepalives": 1,
+    "keepalives_idle": 30,
+    "keepalives_interval": 10,
+    "keepalives_count": 3,
+}
 
 # advisory lock은 (classid, objid) 두 int로 식별한다. 역할 리더용 네임스페이스를 하나 잡아
 # 두고, 5·7단계의 샤드 점유(matcher·worker)는 각자 다른 네임스페이스를 쓴다.
@@ -42,17 +54,27 @@ def _leader_engine():
     붙으므로 커밋과 무관하게 유지된다).
     """
     return create_engine(
-        settings.database_url, poolclass=NullPool, isolation_level="AUTOCOMMIT"
+        settings.database_url,
+        poolclass=NullPool,
+        isolation_level="AUTOCOMMIT",
+        connect_args=_KEEPALIVE_ARGS,
     )
 
 
 class LeaderLock:
-    """역할 하나의 리더십. 획득한 동안 전용 커넥션 하나를 붙잡는다."""
+    """역할 하나의 리더십. 획득한 동안 전용 커넥션 하나를 붙잡는다.
+
+    세 메서드는 서로 다른 스레드에서 불릴 수 있다 — 호출부가 `asyncio.to_thread`로
+    감싸기 때문이고, 특히 종료 시점에는 소유 확인(`is_held`)이 아직 스레드에서 도는 중에
+    `release`가 불릴 수 있다. SQLAlchemy Connection은 스레드 안전하지 않으므로 락으로
+    직렬화한다.
+    """
 
     def __init__(self, role: str) -> None:
         self.role = role
         self._lock_id = _ROLE_LOCK_IDS[role]
         self._connection = None
+        self._guard = threading.Lock()
 
     def try_acquire(self) -> bool:
         """락을 시도한다. 이미 다른 프로세스가 쥐고 있으면 즉시 False (대기하지 않는다).
@@ -60,25 +82,26 @@ class LeaderLock:
         DB가 아직 없거나 접속이 끊긴 경우도 False다 — 호출부는 "지금은 리더가 아니다"로만
         다루고 다음 주기에 다시 시도하면 된다 (DB 없이도 서버는 기동한다, database.py).
         """
-        try:
-            if self._connection is None:
-                self._connection = _leader_engine().connect()
-            acquired = bool(
-                self._connection.execute(
-                    text("SELECT pg_try_advisory_lock(:namespace, :lock_id)"),
-                    {"namespace": ROLE_LEADER_NAMESPACE, "lock_id": self._lock_id},
-                ).scalar()
-            )
-        except Exception:
-            logger.warning("%s 리더 락 시도 실패 — 다음 주기에 재시도한다", self.role)
-            self._discard_connection()
-            return False
+        with self._guard:
+            try:
+                if self._connection is None:
+                    self._connection = _leader_engine().connect()
+                acquired = bool(
+                    self._connection.execute(
+                        text("SELECT pg_try_advisory_lock(:namespace, :lock_id)"),
+                        {"namespace": ROLE_LEADER_NAMESPACE, "lock_id": self._lock_id},
+                    ).scalar()
+                )
+            except Exception:
+                logger.warning("%s 리더 락 시도 실패 — 다음 주기에 재시도한다", self.role)
+                self._discard_connection()
+                return False
 
-        if not acquired:
-            # 대기하는 동안 커넥션을 붙들고 있을 이유가 없다. 후보가 여럿이면 그만큼
-            # PostgreSQL 커넥션을 놀리게 된다 (00-architecture.md 3.5절 커넥션 예산).
-            self._discard_connection()
-        return acquired
+            if not acquired:
+                # 대기하는 동안 커넥션을 붙들고 있을 이유가 없다. 후보가 여럿이면 그만큼
+                # PostgreSQL 커넥션을 놀리게 된다 (00-architecture.md 3.5절 커넥션 예산).
+                self._discard_connection()
+            return acquired
 
     def is_held(self) -> bool:
         """이 세션이 실제로 락을 쥐고 있는지 DB에 되묻는다.
@@ -86,47 +109,50 @@ class LeaderLock:
         커넥션이 끊겼다 조용히 재연결되는 등으로 락만 사라진 상태를 잡아내기 위한 것이라,
         애플리케이션 쪽 플래그가 아니라 `pg_locks`를 본다.
         """
-        if self._connection is None:
-            return False
-        try:
-            return bool(
-                self._connection.execute(
-                    text(
-                        """
-                        SELECT EXISTS (
-                            SELECT 1 FROM pg_locks
-                            WHERE locktype = 'advisory'
-                              AND classid = :namespace
-                              AND objid = :lock_id
-                              AND objsubid = 2
-                              AND pid = pg_backend_pid()
-                              AND granted
-                        )
-                        """
-                    ),
-                    {"namespace": ROLE_LEADER_NAMESPACE, "lock_id": self._lock_id},
-                ).scalar()
-            )
-        except Exception:
-            logger.warning("%s 리더십 확인 실패 — 리더십을 잃은 것으로 간주한다", self.role)
-            return False
+        with self._guard:
+            if self._connection is None:
+                return False
+            try:
+                return bool(
+                    self._connection.execute(
+                        text(
+                            """
+                            SELECT EXISTS (
+                                SELECT 1 FROM pg_locks
+                                WHERE locktype = 'advisory'
+                                  AND classid = :namespace
+                                  AND objid = :lock_id
+                                  AND objsubid = 2
+                                  AND pid = pg_backend_pid()
+                                  AND granted
+                            )
+                            """
+                        ),
+                        {"namespace": ROLE_LEADER_NAMESPACE, "lock_id": self._lock_id},
+                    ).scalar()
+                )
+            except Exception:
+                logger.warning("%s 리더십 확인 실패 — 리더십을 잃은 것으로 간주한다", self.role)
+                return False
 
     def release(self) -> None:
         """락을 풀고 전용 커넥션을 닫는다. 커넥션만 닫아도 서버가 락을 해제하지만,
         명시적으로 풀어 다음 후보의 승격을 앞당긴다."""
-        if self._connection is None:
-            return
-        try:
-            self._connection.execute(
-                text("SELECT pg_advisory_unlock(:namespace, :lock_id)"),
-                {"namespace": ROLE_LEADER_NAMESPACE, "lock_id": self._lock_id},
-            )
-        except Exception:
-            logger.warning("%s 리더 락 해제 실패 — 커넥션을 닫아 세션째 정리한다", self.role)
-        finally:
-            self._discard_connection()
+        with self._guard:
+            if self._connection is None:
+                return
+            try:
+                self._connection.execute(
+                    text("SELECT pg_advisory_unlock(:namespace, :lock_id)"),
+                    {"namespace": ROLE_LEADER_NAMESPACE, "lock_id": self._lock_id},
+                )
+            except Exception:
+                logger.warning("%s 리더 락 해제 실패 — 커넥션을 닫아 세션째 정리한다", self.role)
+            finally:
+                self._discard_connection()
 
     def _discard_connection(self) -> None:
+        """호출부가 이미 `_guard`를 쥔 상태에서만 부른다 — threading.Lock은 재진입이 안 된다."""
         if self._connection is None:
             return
         try:

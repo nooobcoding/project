@@ -8,6 +8,9 @@ from typing import Annotated, Literal
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 from pydantic import field_validator
 
+# 확장판 00-architecture.md 2장 프로세스 역할 5종.
+KNOWN_PROCESS_ROLES = frozenset({"api", "market-data", "matcher", "worker", "scheduler"})
+
 
 class Settings(BaseSettings):
     """앱 전역 설정값.
@@ -56,6 +59,18 @@ class Settings(BaseSettings):
         if isinstance(value, str):
             return [item.strip() for item in value.split(",") if item.strip()]
         return value
+
+    @field_validator("process_roles")
+    @classmethod
+    def _reject_unknown_roles(cls, roles: list[str]) -> list[str]:
+        """오타를 기동 시점에 잡는다. `marketdata`처럼 한 글자만 틀려도 그 역할이 통째로
+        꺼지는데, 증상은 "시세가 안 들어온다"로만 보여 원인을 찾기 어렵다."""
+        unknown = [role for role in roles if role not in KNOWN_PROCESS_ROLES]
+        if unknown:
+            raise ValueError(
+                f"PROCESS_ROLES에 모르는 역할이 있다: {unknown} (가능한 값: {sorted(KNOWN_PROCESS_ROLES)})"
+            )
+        return roles
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
