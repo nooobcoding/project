@@ -52,25 +52,44 @@ def _run_coin_sync_job() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """기동 시 1회 coins 동기화 후 매일 04:00(KST) 동기화를 스케줄링하고, 자동매매 워커와
-    시세 스트림(price_stream)을 상시 백그라운드로 시작한다."""
-    _run_coin_sync_job()
-    scheduler.add_job(_run_coin_sync_job, CronTrigger(hour=4, minute=0))
-    # max_instances=1은 필수다 — tick이 겹치면 같은 확정봉을 두 슬롯 순회가 동시에 평가해
-    # 중복 주문이 나갈 수 있다. coalesce=True는 밀린 실행을 1회로 합쳐 재개 직후 폭주를 막는다
-    # (07-auto-trading.md 4장).
-    scheduler.add_job(
-        run_tick,
-        IntervalTrigger(seconds=TICK_INTERVAL_SECONDS),
-        max_instances=1,
-        coalesce=True,
-    )
+    """PROCESS_ROLES에 켜진 역할만 기동한다 (확장판 00-architecture.md 2.1절, 07-roadmap.md
+    1단계). 기본값은 전 역할 활성이라 로컬 개발은 지금까지와 동일하게 coins 동기화·자동매매
+    워커·시세 스트림(price_stream)이 전부 한 프로세스에서 상시 돈다.
+
+    `matcher`·`api` 역할은 아직 독립된 기동 경로가 없다 — matcher는 4단계까지 market-data의
+    시세 수신 루프 안에 묶여 있고(00-architecture.md 1장 ③), api는 이 프로세스 자체라 항상
+    켜져 있다. 두 역할 이름은 설정에만 미리 존재하고, 실제로 무언가를 켜고 끄기 시작하는 건
+    각각 5단계·4단계부터다.
+    """
+    roles = settings.process_roles
+
+    if "scheduler" in roles:
+        _run_coin_sync_job()
+        scheduler.add_job(_run_coin_sync_job, CronTrigger(hour=4, minute=0))
+
+    if "worker" in roles:
+        # max_instances=1은 필수다 — tick이 겹치면 같은 확정봉을 두 슬롯 순회가 동시에
+        # 평가해 중복 주문이 나갈 수 있다. coalesce=True는 밀린 실행을 1회로 합쳐 재개
+        # 직후 폭주를 막는다 (07-auto-trading.md 4장).
+        scheduler.add_job(
+            run_tick,
+            IntervalTrigger(seconds=TICK_INTERVAL_SECONDS),
+            max_instances=1,
+            coalesce=True,
+        )
+
     scheduler.start()
-    price_stream_task = asyncio.create_task(run_price_stream())
+
+    price_stream_task = (
+        asyncio.create_task(run_price_stream()) if "market-data" in roles else None
+    )
+
     yield
-    price_stream_task.cancel()
-    with suppress(asyncio.CancelledError):
-        await price_stream_task
+
+    if price_stream_task is not None:
+        price_stream_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await price_stream_task
     scheduler.shutdown()
 
 

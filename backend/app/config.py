@@ -3,7 +3,9 @@
 docs/00-overview.md 2장 기술 스택(PostgreSQL, JWT) 및 01-erd.md 전제 값들을 로드한다.
 """
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from typing import Annotated
+
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 from pydantic import field_validator
 
 
@@ -21,13 +23,29 @@ class Settings(BaseSettings):
     jwt_access_token_expire_hours: int = 24  # 01-auth.md — Access Token 만료 24시간
     # 배포 환경마다 프론트 origin이 다르므로 하드코딩하지 않는다. .env의
     # CORS_ALLOWED_ORIGINS(콤마 구분)로 덮어쓴다 — 기본값은 로컬 개발용.
-    cors_allowed_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
+    # NoDecode: pydantic-settings는 list 타입 env 값을 기본적으로 JSON으로 파싱하려 든다
+    # ("api" 같은 콤마 구분 문자열은 유효한 JSON이 아니라 그대로 두면 SettingsError가 난다).
+    # NoDecode로 그 시도를 건너뛰고 원본 문자열을 아래 before-validator에 그대로 넘긴다.
+    cors_allowed_origins: Annotated[list[str], NoDecode] = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ]
+    # 확장판 00-architecture.md 2.1절 — 이 프로세스가 맡을 역할. 기본값은 전 역할 활성이라
+    # 로컬 개발은 지금까지와 완전히 동일한 단일 프로세스로 동작한다. 운영에서 역할을 나눌 때만
+    # PROCESS_ROLES(콤마 구분)로 부분집합을 지정한다 (07-roadmap.md 1단계).
+    process_roles: Annotated[list[str], NoDecode] = [
+        "api",
+        "market-data",
+        "matcher",
+        "worker",
+        "scheduler",
+    ]
 
-    @field_validator("cors_allowed_origins", mode="before")
+    @field_validator("cors_allowed_origins", "process_roles", mode="before")
     @classmethod
-    def _split_cors_origins(cls, value: str | list[str]) -> list[str]:
+    def _split_comma_separated(cls, value: str | list[str]) -> list[str]:
         if isinstance(value, str):
-            return [origin.strip() for origin in value.split(",") if origin.strip()]
+            return [item.strip() for item in value.split(",") if item.strip()]
         return value
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
