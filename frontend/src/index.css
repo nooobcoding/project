@@ -1,5 +1,2109 @@
-/* 00-overview.md 6장 원칙 6 — 다크 모드 기반 UI. 화면 구현 시 배경 #1E1E1C, 포인트 컬러 #1D9E75로 확정 */
+/* 00-overview.md 6장 원칙 6 — 다크 모드 기반 UI. 배경 #1E1E1C, 포인트 컬러 #1D9E75 */
+:root {
+  --bg: #1e1e1c;
+  --surface: #2a2a27;
+  --border: #3d3d3a;
+  --text: #ededea;
+  --text-muted: #9a9a96;
+  --accent: #1d9e75;
+  --accent-hover: #24b787;
+  --error: #e5484d;
+  --rise: #e5484d; /* 상승 — 국내 관례상 빨강 */
+  --fall: #1d9e75; /* 하락 — 초록 */
+  --profit: #3b82f6; /* 07-auto-trading 익절 알림 — 손절(빨강)/매수신호(초록)와 구분되는 파랑 */
+}
+
+* {
+  box-sizing: border-box;
+}
+
 body {
   margin: 0;
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--text);
   font-family: system-ui, sans-serif;
+}
+
+.page-shell {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 48px 24px;
+}
+
+/* SCR-01 — 로그인/회원가입 (docs/features/01-auth.md) */
+
+.auth-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.auth-single {
+  width: 100%;
+  max-width: 400px;
+  container-type: inline-size;
+}
+
+/* "Gazua" 텍스트 폭이 로그인/회원가입 박스(.auth-single) 폭의 약 60%가 되도록,
+   렌더된 텍스트 폭 ≈ font-size × 2.9(system-ui bold 기준 실측)의 역산값을 cqw로 고정한다. */
+.auth-brand {
+  margin: 0 0 24px;
+  font-size: 20.7cqw;
+  font-weight: 700;
+  color: var(--accent);
+  text-align: center;
+}
+
+.auth-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 32px;
+}
+
+.auth-form h2 {
+  margin: 0 0 20px;
+  font-size: 1.25rem;
+}
+
+.auth-field {
+  margin-bottom: 16px;
+}
+
+.auth-field label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 0.875rem;
+  color: var(--text-muted);
+}
+
+.auth-input {
+  width: 100%;
+  padding: 10px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 1rem;
+}
+
+.auth-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.auth-input.has-error {
+  border-color: var(--error);
+}
+
+.auth-password-row {
+  display: flex;
+  gap: 8px;
+}
+
+.auth-password-row .auth-input {
+  flex: 1;
+}
+
+.auth-password-toggle {
+  padding: 0 12px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.auth-password-toggle:hover {
+  color: var(--text);
+}
+
+.auth-error-message {
+  margin: 6px 0 0;
+  font-size: 0.8125rem;
+  color: var(--error);
+}
+
+.auth-hint {
+  margin: 6px 0 0;
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+
+.auth-checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 20px;
+  font-size: 0.875rem;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.auth-button {
+  width: 100%;
+  padding: 12px;
+  background: var(--accent);
+  border: none;
+  border-radius: 8px;
+  color: #fff;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.auth-button:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.auth-button:disabled {
+  background: var(--border);
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+.auth-switch-link {
+  margin: 16px 0 0;
+  font-size: 0.875rem;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.auth-switch-link a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.auth-switch-link a:hover {
+  text-decoration: underline;
+}
+
+.auth-toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 12px 20px;
+  background: var(--surface);
+  border: 1px solid var(--error);
+  border-radius: 8px;
+  color: var(--text);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+/* 공용 GNB (00-overview.md 6장 원칙 6 — 화면마다 새로 그리지 않고 공통 고정) */
+
+.app-shell {
+  min-height: 100vh;
+}
+
+.gnb {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 14px 24px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.gnb-logo {
+  font-weight: 700;
+  white-space: nowrap;
+  color: var(--accent);
+}
+
+.gnb-nav {
+  display: flex;
+  gap: 4px;
+  flex: 1;
+  flex-wrap: wrap;
+}
+
+.gnb-link {
+  padding: 8px 12px;
+  border-radius: 8px;
+  color: var(--text-muted);
+  text-decoration: none;
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+
+.gnb-link:hover {
+  color: var(--text);
+}
+
+.gnb-link.is-active {
+  color: var(--text);
+  background: var(--bg);
+}
+
+.gnb-link.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.gnb-link.is-disabled:hover {
+  color: var(--text-muted);
+}
+
+.gnb-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.gnb-icon-button {
+  padding: 6px 10px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 1rem;
+  cursor: pointer;
+}
+
+.gnb-icon-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* 04-settings.md — GNB 알림 아이콘 배지/드롭다운 (00-overview.md 6장 원칙 3) */
+
+.gnb-notification-wrap {
+  position: relative;
+}
+
+.gnb-notification-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--error);
+  color: #fff;
+  font-size: 0.625rem;
+  line-height: 16px;
+  text-align: center;
+}
+
+.gnb-notification-dropdown {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 320px;
+  max-height: 400px;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  z-index: 20;
+}
+
+.gnb-notification-empty {
+  padding: 20px 16px;
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+  text-align: center;
+}
+
+.gnb-notification-item {
+  display: block;
+  width: 100%;
+  padding: 12px 16px;
+  border: none;
+  border-top: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  font-size: 0.8125rem;
+}
+
+.gnb-notification-item:first-child {
+  border-top: none;
+}
+
+.gnb-notification-item.is-unread {
+  background: rgba(29, 158, 117, 0.08);
+}
+
+.gnb-notification-item:hover {
+  background: var(--bg);
+}
+
+.gnb-notification-time {
+  display: block;
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: 0.6875rem;
+}
+
+.gnb-logout-button {
+  padding: 8px 16px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.gnb-logout-button:hover {
+  border-color: var(--accent);
+}
+
+/* SCR-02 — 대시보드 (docs/features/02-dashboard.md) */
+
+.dashboard-page {
+  min-height: 100vh;
+  padding-bottom: 32px;
+}
+
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+  padding: 24px;
+}
+
+@media (max-width: 960px) {
+  .dashboard-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.dashboard-column {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.dashboard-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+}
+
+.dashboard-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.dashboard-card-label {
+  margin: 0 0 4px;
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+
+.dashboard-asset-total {
+  margin: 0;
+  font-size: 1.75rem;
+  font-weight: 700;
+}
+
+.dashboard-profit-pct {
+  margin: 4px 0 16px;
+  font-size: 0.875rem;
+  color: var(--text-muted);
+}
+
+/* 02-dashboard.md 2-A — 상승 빨간색/하락 녹색 */
+.dashboard-profit-pct.is-positive {
+  color: var(--rise);
+}
+
+.dashboard-profit-pct.is-negative {
+  color: var(--fall);
+}
+
+.dashboard-mini-cards {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.dashboard-mini-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.dashboard-empty-text {
+  margin: 0;
+  font-size: 0.875rem;
+  color: var(--text-muted);
+}
+
+.dashboard-chip-button {
+  padding: 6px 12px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text);
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+
+.dashboard-chip-button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.dashboard-chip-button:disabled {
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+/* 02-dashboard.md 3장 — 관심 코인 추가: 버튼 바로 아래 붙는 검색 드롭다운(모달 아님) */
+.dashboard-add-coin {
+  position: relative;
+}
+
+.dashboard-add-coin-popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 20;
+  width: 260px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.dashboard-add-coin-results {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 240px;
+  overflow-y: auto;
+  scrollbar-color: var(--border) transparent;
+}
+
+.dashboard-add-coin-results::-webkit-scrollbar {
+  width: 6px;
+}
+
+.dashboard-add-coin-results::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.dashboard-add-coin-results::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+
+.dashboard-add-coin-result-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 6px;
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 0.8125rem;
+  cursor: pointer;
+  text-align: left;
+}
+
+.dashboard-add-coin-result-item:hover:not(:disabled) {
+  background: var(--bg);
+}
+
+.dashboard-add-coin-result-item:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.dashboard-add-coin-empty {
+  padding: 8px 6px;
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+}
+
+.dashboard-price-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.dashboard-price-list-item {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+
+.dashboard-price-list-item:first-child {
+  border-top: none;
+}
+
+.dashboard-coin-symbol {
+  font-weight: 600;
+}
+
+/* 02-dashboard.md 2-A — 주요 코인 시세 목록: 상승 빨간색/하락 녹색 */
+.is-positive {
+  color: var(--rise);
+}
+
+.is-negative {
+  color: var(--fall);
+}
+
+.dashboard-remove-button {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 1rem;
+}
+
+.dashboard-remove-button:hover {
+  color: var(--error);
+}
+
+.dashboard-tab-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.dashboard-tab {
+  padding: 8px 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.dashboard-tab.is-active {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.dashboard-chart-container {
+  width: 100%;
+  height: 320px;
+}
+
+.dashboard-chart-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 320px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--text-muted);
+  font-size: 0.875rem;
+}
+
+.dashboard-trade-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.dashboard-trade-list-item {
+  display: grid;
+  grid-template-columns: auto 1fr 1fr 1fr;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+
+.dashboard-trade-list-item:first-child {
+  border-top: none;
+}
+
+.dashboard-trade-badge {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  width: fit-content;
+}
+
+.dashboard-trade-badge.is-buy {
+  background: rgba(229, 72, 77, 0.15);
+  color: var(--error);
+}
+
+.dashboard-trade-badge.is-sell {
+  background: rgba(77, 141, 229, 0.15);
+  color: #4d8de5;
+}
+
+.dashboard-shortcut-chips {
+  display: flex;
+  gap: 12px;
+}
+
+.dashboard-ws-caption {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.dashboard-ws-banner {
+  padding: 10px 16px;
+  background: rgba(229, 72, 77, 0.15);
+  border: 1px solid var(--error);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 0.8125rem;
+}
+
+.dashboard-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000; /* lightweight-charts가 내부 캔버스에 z-index:1~2를 직접 지정하므로(06
+    백테스팅 화면에서 발견) 명시적 z-index 없이는 position:fixed라도 그 캔버스에 클릭이
+    가로채인다 — 모든 모달의 공용 배경이라 여기 한 곳만 고치면 된다. */
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.dashboard-modal {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px;
+  width: 320px;
+}
+
+.dashboard-modal h3 {
+  margin: 0 0 16px;
+}
+
+.dashboard-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+/* SCR-03 — 수동 매매 (docs/features/03-manual-trading.md) */
+
+/* 좌측(차트 위 / 호가+주문 폼 아래) 넓은 열 + 우측 코인 목록이 두 행에 걸쳐 세로로 긴 열 */
+.trade-grid {
+  display: grid;
+  grid-template-columns: 1fr 260px;
+  grid-template-rows: auto auto;
+  gap: 16px;
+  padding: 24px;
+  align-items: start;
+}
+
+.trade-grid > .trade-coin-list-panel {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+}
+
+.trade-order-row {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  gap: 16px;
+  align-items: start;
+}
+
+@media (max-width: 1200px) {
+  .trade-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .trade-grid > .trade-coin-list-panel {
+    grid-column: auto;
+    grid-row: auto;
+  }
+
+  .trade-order-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* 주문 패널·거래내역·미체결 목록을 같은 폭으로 세로 배치 (호가창 옆, 주문 패널 바로 아래) */
+.trade-order-column {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.trade-column {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.trade-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* 검색창은 고정, 목록만 스크롤 — 패널 자체는 넘치는 내용을 감추기만 하고
+   실제 스크롤은 .trade-coin-list(ul)이 담당한다 */
+.trade-coin-list-panel {
+  max-height: calc(100vh - 120px);
+  overflow: hidden;
+}
+
+.trade-coin-list-panel > .auth-input {
+  flex-shrink: 0;
+}
+
+.trade-coin-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-color: var(--border) transparent; /* Firefox: 트랙 배경 제거 */
+}
+
+.trade-coin-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.trade-coin-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.trade-coin-list::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+
+.trade-coin-list-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 6px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.trade-coin-list-item:hover {
+  background: var(--bg);
+}
+
+.trade-coin-list-item.is-selected {
+  background: var(--bg);
+  border: 1px solid var(--accent);
+}
+
+.trade-coin-list-name {
+  display: flex;
+  flex-direction: column;
+  font-size: 0.8125rem;
+}
+
+.trade-coin-list-symbol {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+.trade-coin-list-price {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  font-size: 0.8125rem;
+}
+
+.trade-price-large {
+  margin: 0;
+  font-size: 2rem;
+  font-weight: 700;
+}
+
+.trade-price-info-row {
+  display: flex;
+  gap: 16px;
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+
+.trade-pending-order-item {
+  display: grid;
+  grid-template-columns: auto 1fr 1fr 1fr auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+
+.trade-pending-order-item:first-child {
+  border-top: none;
+}
+
+.trade-orderbook-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.trade-orderbook-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.trade-orderbook-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 3px 6px;
+  font-size: 0.75rem;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.trade-orderbook-row:hover {
+  background: var(--bg);
+}
+
+.trade-orderbook-row.is-ask {
+  color: #4d8de5;
+}
+
+.trade-orderbook-row.is-bid {
+  color: var(--error);
+}
+
+.trade-orderbook-current-price {
+  text-align: center;
+  padding: 8px 0;
+  font-weight: 700;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  margin: 4px 0;
+}
+
+/* 매수/매도 폼 — 3열 그리드 밖 전체 폭 가로 바 (04-settings 이전까지는 03 화면 전용) */
+.trade-order-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 20px;
+  padding: 16px 20px;
+}
+
+.trade-order-bar-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.trade-order-bar-inputs {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 12px;
+  flex: 2 1 360px;
+}
+
+.trade-order-bar-inputs .order-field {
+  flex: 1 1 140px;
+  min-width: 120px;
+}
+
+.trade-order-bar-summary {
+  flex: 1 1 200px;
+  min-width: 180px;
+}
+
+.trade-order-tab-row {
+  display: flex;
+  gap: 8px;
+}
+
+.trade-order-tab {
+  flex: 1;
+  padding: 10px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.trade-order-tab.is-buy.is-active {
+  border-color: var(--error);
+  color: var(--error);
+}
+
+.trade-order-tab.is-sell.is-active {
+  border-color: #4d8de5;
+  color: #4d8de5;
+}
+
+.order-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.order-field label {
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+
+.order-number-input-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0 12px;
+}
+
+.order-number-input {
+  flex: 1;
+  min-width: 0;
+  padding: 10px 0;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font-size: 1rem;
+}
+
+.order-number-input:focus {
+  outline: none;
+}
+
+.order-number-input:disabled {
+  color: var(--text-muted);
+}
+
+.order-number-input.has-error {
+  color: var(--error);
+}
+
+.order-number-input-suffix {
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+}
+
+.trade-order-ratio-row {
+  display: flex;
+  gap: 6px;
+  padding-top: 22px; /* 옆 그룹의 label 높이만큼 내려서 인풋 줄과 맞춘다 */
+}
+
+.trade-order-ratio-row .dashboard-chip-button {
+  min-width: 44px;
+  padding: 6px 10px;
+  text-align: center;
+}
+
+.trade-order-amount-row,
+.trade-order-balance-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+
+.trade-submit-button {
+  align-self: flex-end;
+  width: 140px;
+}
+
+.trade-history-panel {
+  min-width: 0;
+}
+
+.trade-history-item {
+  display: grid;
+  grid-template-columns: auto 1fr 1fr 1fr auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+  font-size: 0.8125rem;
+}
+
+.trade-history-item:first-child {
+  border-top: none;
+}
+
+.trade-history-status.is-canceled {
+  color: var(--text-muted);
+}
+
+.trade-history-time {
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.trade-submit-button.is-buy {
+  background: var(--error);
+}
+
+.trade-submit-button.is-buy:hover:not(:disabled) {
+  background: #f26066;
+}
+
+.trade-submit-button.is-sell {
+  background: #4d8de5;
+}
+
+.trade-submit-button.is-sell:hover:not(:disabled) {
+  background: #6ba1ec;
+}
+
+/* SCR-08 — 공통 설정 (docs/features/04-settings.md) */
+
+.settings-page {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 32px 24px;
+}
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+  align-items: start;
+}
+
+@media (max-width: 720px) {
+  .settings-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.settings-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.settings-panel h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.settings-field-label {
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+}
+
+.settings-field-value {
+  font-size: 0.9375rem;
+}
+
+.settings-divider {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 0;
+}
+
+.settings-danger-button {
+  align-self: flex-start;
+  padding: 8px 16px;
+  background: transparent;
+  border: 1px solid var(--error);
+  border-radius: 8px;
+  color: var(--error);
+  cursor: pointer;
+}
+
+.settings-danger-button:hover {
+  background: var(--error);
+  color: #fff;
+}
+
+.settings-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.settings-toggle-label {
+  font-size: 0.875rem;
+}
+
+.settings-caption {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+.toggle-switch {
+  position: relative;
+  display: inline-block;
+  width: 40px;
+  height: 22px;
+  flex-shrink: 0;
+}
+
+.toggle-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.toggle-switch-track {
+  position: absolute;
+  inset: 0;
+  background: var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.toggle-switch-track::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  background: var(--text);
+  border-radius: 50%;
+  transition: transform 0.15s ease;
+}
+
+.toggle-switch input:checked + .toggle-switch-track {
+  background: var(--accent);
+}
+
+.toggle-switch input:checked + .toggle-switch-track::before {
+  transform: translateX(18px);
+}
+
+.toggle-switch input:disabled + .toggle-switch-track {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* SCR-07 — 입출금 (docs/features/05-deposit-withdraw.md) */
+
+.wallet-page {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 32px 24px;
+}
+
+.wallet-grid {
+  display: grid;
+  grid-template-columns: 340px 1fr;
+  gap: 24px;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .wallet-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.wallet-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.wallet-balance-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.wallet-balance-amount {
+  margin: 4px 0 0;
+  font-size: 1.75rem;
+  font-weight: 700;
+}
+
+.wallet-tab-row {
+  display: flex;
+  gap: 8px;
+}
+
+.wallet-tab {
+  flex: 1;
+  padding: 10px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.wallet-tab.is-deposit.is-active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.wallet-tab.is-withdraw.is-active {
+  border-color: var(--error);
+  color: var(--error);
+}
+
+.wallet-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.wallet-quick-amount-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.wallet-memo-input {
+  padding: 10px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 0.9375rem;
+}
+
+.wallet-memo-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.wallet-preview-text {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+
+.wallet-warning-box {
+  margin: 0;
+  padding: 10px 12px;
+  background: rgba(229, 72, 77, 0.1);
+  border: 1px solid var(--error);
+  border-radius: 8px;
+  color: var(--error);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+.wallet-submit-button.is-deposit {
+  background: var(--accent);
+}
+
+.wallet-submit-button.is-deposit:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.wallet-submit-button.is-withdraw {
+  background: var(--error);
+}
+
+.wallet-submit-button.is-withdraw:hover:not(:disabled) {
+  background: #f26066;
+}
+
+.wallet-history-panel {
+  min-width: 0;
+}
+
+.wallet-history-filters {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.wallet-filter-chip-row {
+  display: flex;
+  gap: 8px;
+}
+
+.dashboard-chip-button.is-active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.wallet-date-range-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+}
+
+.wallet-date-input {
+  padding: 6px 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 0.8125rem;
+}
+
+.wallet-history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.wallet-history-item {
+  display: grid;
+  grid-template-columns: 60px 1fr 1fr 1fr auto;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+  font-size: 0.8125rem;
+}
+
+.wallet-history-item:first-child {
+  border-top: none;
+}
+
+.wallet-history-header {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  border-top: none;
+}
+
+.wallet-type-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  width: fit-content;
+}
+
+.wallet-type-badge.is-deposit {
+  background: rgba(29, 158, 117, 0.15);
+  color: var(--accent);
+}
+
+.wallet-type-badge.is-withdraw {
+  background: rgba(229, 72, 77, 0.15);
+  color: var(--error);
+}
+
+.wallet-history-memo {
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wallet-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.wallet-pagination-label {
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+}
+
+/* SCR-04 — 자동매매 (docs/features/07-auto-trading.md 3장) */
+
+/* 전략 슬롯 목록(280px) / 신호 모니터링+체결 내역(유동) / 알림 센터(280px) */
+.auto-grid {
+  display: grid;
+  grid-template-columns: 280px 1fr 280px;
+  gap: 16px;
+  padding: 24px;
+  align-items: start;
+}
+
+.auto-center-column {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+@media (max-width: 1200px) {
+  .auto-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.auto-slot-list-panel {
+  max-height: calc(100vh - 120px);
+  overflow: hidden;
+}
+
+.auto-slot-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.auto-slot-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 0;
+  border-top: 1px solid var(--border);
+}
+
+.auto-slot-card:first-child {
+  border-top: none;
+}
+
+.auto-slot-card-main {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  cursor: pointer;
+  min-width: 0;
+  flex: 1;
+}
+
+.auto-slot-card-title {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.auto-slot-card-symbol {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+.auto-slot-card-badges {
+  display: flex;
+  gap: 6px;
+}
+
+.auto-slot-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  font-size: 0.6875rem;
+  color: var(--text-muted);
+  width: fit-content;
+}
+
+.auto-slot-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* 폼 모달 — dashboard-modal보다 넓게 (파라미터 그리드가 들어가므로) */
+.auto-slot-modal {
+  width: min(480px, 90vw);
+  max-height: 85vh;
+  overflow-y: auto;
+}
+
+.auto-slot-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.auto-param-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 12px;
+}
+
+/* 대상 코인 검색+목록 — 03-manual-trading.md CoinListPanel과 동일하게 검색창을 목록 맨 위에
+   고정한다(.auto-coin-select는 세로 flex라 자연히 그렇게 된다). */
+.auto-coin-select {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.auto-coin-select-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+  max-height: 180px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  scrollbar-color: var(--border) transparent; /* Firefox: 트랙 배경 제거 */
+}
+
+.auto-coin-select-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.auto-coin-select-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.auto-coin-select-list::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+
+.auto-preview-box {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+
+.auto-preview-box p {
+  margin: 4px 0 0;
+}
+
+.auto-preview-box p:first-child {
+  margin-top: 0;
+}
+
+.auto-locked-notice {
+  margin: 0;
+  padding: 12px;
+  background: rgba(229, 72, 77, 0.1);
+  border: 1px solid var(--error);
+  border-radius: 8px;
+  color: var(--error);
+  font-size: 0.8125rem;
+}
+
+.auto-signal-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+}
+
+.auto-signal-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.auto-signal-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.auto-signal-status {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+.auto-signal-status.is-positive {
+  color: var(--rise);
+}
+
+.auto-signal-status.is-negative {
+  color: var(--fall);
+}
+
+.auto-signal-card-meta {
+  display: flex;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+.auto-signal-card-time {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.6875rem;
+}
+
+.auto-notification-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.auto-notification-item {
+  padding: 10px 12px;
+  border-left: 3px solid var(--border);
+  background: var(--bg);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.auto-notification-item.is-buy-signal {
+  border-left-color: var(--accent);
+}
+
+.auto-notification-item.is-take-profit {
+  border-left-color: var(--profit);
+}
+
+.auto-notification-item.is-stop-loss {
+  border-left-color: var(--error);
+}
+
+.auto-notification-item.is-error {
+  border-left-color: var(--error);
+}
+
+.auto-notification-item.is-unread {
+  background: rgba(29, 158, 117, 0.08);
+}
+
+.auto-notification-message {
+  margin: 0;
+  font-size: 0.8125rem;
+}
+
+.auto-notification-time {
+  color: var(--text-muted);
+  font-size: 0.6875rem;
+}
+
+/* SCR-02 대시보드 자동매매 상태 카드 — 07 완료 후 실데이터 연결 */
+.auto-status-card {
+  display: block;
+  color: inherit;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.auto-status-card:hover {
+  border-color: var(--accent);
+}
+
+.auto-status-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.auto-status-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+/* SCR-05 — 백테스팅 (docs/features/06-backtesting.md) */
+
+.backtest-grid {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  gap: 24px;
+  align-items: start;
+  padding: 24px;
+}
+
+@media (max-width: 900px) {
+  .backtest-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.backtest-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+  min-width: 0;
+}
+
+.backtest-settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.backtest-date-range-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+}
+
+.backtest-result-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.backtest-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.backtest-metric-tile {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.backtest-metric-value {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 700;
+}
+
+.backtest-metric-caption {
+  margin: 2px 0 0;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.backtest-load-modal {
+  width: min(420px, 90vw);
+  max-height: 85vh;
+  overflow-y: auto;
+}
+
+.backtest-result-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.backtest-result-list-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.backtest-result-list-item:hover {
+  background: var(--bg);
+}
+
+.backtest-result-list-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.backtest-result-list-label {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.backtest-result-list-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+/* 수익률 색은 기존 .is-positive/.is-negative(상승 빨강/하락 녹색, 02-dashboard.md 관례)를 그대로 쓴다. */
+
+/* 08-portfolio.md — 좌측이 넓은 2컬럼(.wallet-grid의 340px 1fr과 반대 비율). 요약 카드는
+   backtest-metric-grid/tile을 그대로 재사용한다(새 클래스 없이 구조만 공유). */
+.portfolio-summary-grid {
+  margin-bottom: 24px;
+}
+
+.portfolio-layout {
+  display: grid;
+  grid-template-columns: 1fr 360px;
+  gap: 24px;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .portfolio-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.portfolio-column {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  min-width: 0;
+}
+
+.portfolio-panel-title {
+  margin: 0 0 4px;
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.portfolio-holdings-list,
+.portfolio-trades-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.portfolio-holdings-item {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr 1fr 1fr 1fr 1.4fr;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+  font-size: 0.8125rem;
+}
+
+.portfolio-holdings-item:first-child {
+  border-top: none;
+}
+
+.portfolio-holdings-header {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  border-top: none;
+}
+
+.portfolio-holdings-name {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.portfolio-trades-item {
+  display: grid;
+  grid-template-columns: 60px 60px 1.2fr 1fr 1fr 1.2fr;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+  font-size: 0.8125rem;
+}
+
+.portfolio-trades-item:first-child {
+  border-top: none;
+}
+
+.portfolio-trades-header {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  border-top: none;
+}
+
+.portfolio-trades-coin {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.portfolio-side-badge,
+.portfolio-source-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  width: fit-content;
+}
+
+.portfolio-side-badge.is-buy {
+  background: rgba(229, 72, 77, 0.15); /* 국내 관례상 매수(상승 방향)는 빨강 계열 */
+  color: var(--rise);
+}
+
+.portfolio-side-badge.is-sell {
+  background: rgba(29, 158, 117, 0.15);
+  color: var(--fall);
+}
+
+.portfolio-source-badge.is-auto {
+  background: rgba(59, 130, 246, 0.15);
+  color: var(--profit);
+}
+
+.portfolio-source-badge.is-manual {
+  background: rgba(154, 154, 150, 0.15);
+  color: var(--text-muted);
+}
+
+.portfolio-trades-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 16px;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.portfolio-coin-filter {
+  position: relative;
+}
+
+.portfolio-donut-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.portfolio-donut-tooltip {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 0.8125rem;
+}
+
+.portfolio-donut-tooltip p {
+  margin: 0;
+}
+
+.portfolio-donut-tooltip p:first-child {
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.portfolio-donut-legend {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.portfolio-donut-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.8125rem;
+}
+
+.portfolio-donut-legend-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.portfolio-donut-legend-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.portfolio-donut-legend-pct {
+  color: var(--text-muted);
+}
+
+.portfolio-report-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.portfolio-report-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.875rem;
+}
+
+.portfolio-monthly-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.portfolio-monthly-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.8125rem;
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
+}
+
+.portfolio-monthly-item:first-child {
+  border-top: none;
 }

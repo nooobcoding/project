@@ -1,10 +1,34 @@
-// 스캐폴딩 단계 placeholder. 화면 구현은 docs/features/*.md 순서(00-overview.md 7장 로드맵)를 따른다.
+import { Navigate, Route, Routes } from "react-router-dom";
+import { AuthProvider } from "./components/AuthProvider";
+import { ProtectedRoute } from "./components/ProtectedRoute";
+import { AutoTradingPage } from "./pages/AutoTradingPage";
+import { BacktestPage } from "./pages/BacktestPage";
+import { DashboardPage } from "./pages/DashboardPage";
+import { DepositWithdrawPage } from "./pages/DepositWithdrawPage";
+import { LoginPage } from "./pages/LoginPage";
+import { ManualTradingPage } from "./pages/ManualTradingPage";
+import { PortfolioPage } from "./pages/PortfolioPage";
+import { RegisterPage } from "./pages/RegisterPage";
+import { SettingsPage } from "./pages/SettingsPage";
+
 function App() {
   return (
-    <div>
-      <h1>코인 자동매매 프로그램</h1>
-      <p>설계 문서: docs/00-overview.md 참고</p>
-    </div>
+    <AuthProvider>
+      <Routes>
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="/register" element={<RegisterPage />} />
+        <Route element={<ProtectedRoute />}>
+          <Route path="/dashboard" element={<DashboardPage />} />
+          <Route path="/trade" element={<ManualTradingPage />} />
+          <Route path="/auto" element={<AutoTradingPage />} />
+          <Route path="/backtest" element={<BacktestPage />} />
+          <Route path="/portfolio" element={<PortfolioPage />} />
+          <Route path="/deposit-withdraw" element={<DepositWithdrawPage />} />
+          <Route path="/settings" element={<SettingsPage />} />
+        </Route>
+        <Route path="*" element={<Navigate to="/dashboard" replace />} />
+      </Routes>
+    </AuthProvider>
   );
 }
 

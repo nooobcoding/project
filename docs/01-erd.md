@@ -220,14 +220,16 @@ erDiagram
 | user_id | BIGINT | FK → users.id | |
 | coin_symbol | VARCHAR(10) | FK → coins.symbol | |
 | side | VARCHAR(4) | CHECK IN ('buy','sell') | |
-| order_type | VARCHAR(6) | CHECK IN ('limit','market') | |
-| price | NUMERIC(20,8) | NOT NULL | limit: 지정가 / market: 체결가(체결 후 기록) |
+| order_type | VARCHAR(8) | CHECK IN ('limit','market','reserved') | (신규) `reserved`(예약가) — 감시가격 도달 시 `limit`으로 승격만 되고 자체 체결 경로는 없음. 3.7절 참고 |
+| price | NUMERIC(20,8) | NOT NULL | limit/reserved: 지정가(주문가격) / market: 체결가(체결 후 기록) |
 | quantity | NUMERIC(28,8) | NOT NULL | |
 | status | VARCHAR(8) | CHECK IN ('pending','filled','canceled') | |
 | source | VARCHAR(6) | CHECK IN ('manual','auto') | |
-| strategy_slot_id | BIGINT | FK → strategy_slots.id, NULL 허용 | auto 체결일 때만 값 존재 |
+| strategy_slot_id | BIGINT | FK → strategy_slots.id **ON DELETE SET NULL**, NULL 허용 | auto 체결일 때만 값 존재. 슬롯이 삭제되면 연결만 끊고 체결 기록은 남긴다 — 주문은 잔고 이력의 근거이자 `08-portfolio` 거래내역이라 슬롯과 함께 지울 수 없다. (07 구현 중 이 FK를 RESTRICT로 두면 한 번이라도 거래한 슬롯을 삭제할 수 없어 `DELETE /api/strategy-slots/{id}`가 실패하는 것을 발견해 SET NULL로 확정) |
 | realized_profit | NUMERIC(20,4) | NULL 허용 | (신규) `side='sell'`이 체결될 때, 체결 직전 `holdings.avg_buy_price` 기준 실현손익을 계산해 기록. 매수 행과 미체결 행은 NULL |
 | fee | NUMERIC(20,4) | NOT NULL DEFAULT 0 | (신규) 체결 수수료(원화). pending 동안 0, 체결 시 확정. 계산 규칙은 3.2절 |
+| trigger_price | NUMERIC(20,8) | NULL 허용 | (신규) 예약가 주문의 감시가격. `order_type='reserved'`가 아니면 항상 NULL |
+| trigger_direction | VARCHAR(7) | CHECK IN ('rising','falling'), NULL 허용 | (신규) 주문 생성 시점의 현재가 대비 감시가격 위치로 1회 확정. 3.7절 참고 |
 | created_at | TIMESTAMPTZ | NOT NULL | |
 | filled_at | TIMESTAMPTZ | NULL | pending 동안 NULL |
 
@@ -236,6 +238,8 @@ erDiagram
 **`realized_profit`을 둔 이유**: `08-portfolio`의 "월별 수익"(FR-P04)은 매도 시점의 실현손익을 기간별로 합산해야 한다. 매도 체결 로직(03/07 공용)이 `holdings`를 갱신하기 직전 시점의 `avg_buy_price`로 `(체결가 × (1 − 수수료율) − avg_buy_price) × 수량`을 계산해 이 컬럼에 남긴다 (3.2절). `backtest_trades.profit`과 동일한 목적의 컬럼을 실거래 쪽에도 대칭으로 둔 것이다.
 
 **`status` 전이 주체**: `pending → filled`/`canceled` 전환은 어느 화면 이벤트에서도 자동으로 일어나지 않으며, [09-execution-engine.md](features/09-execution-engine.md)의 체결 엔진(시세 스트림 훅)과 03의 취소 API가 유일한 실행 주체다.
+
+**가용잔고 잠금은 `order_type` 무관**: 3.1절의 가용 원화/가용 코인 수량 파생식은 `status='pending'`인 모든 매수/매도 주문을 `order_type`과 상관없이 합산한다 — 예약가 주문도 생성 즉시 지정가와 동일하게 잔고를 동결한다(트리거 도달 전이라도).
 
 ### `holdings` — 보유 코인 (`03-manual-trading`)
 
@@ -280,7 +284,7 @@ erDiagram
 | type | VARCHAR(8) | CHECK IN ('signal','exit','error') | |
 | message | TEXT | NOT NULL | |
 | coin_symbol | VARCHAR(10) | FK → coins.symbol, NULL 허용 | |
-| strategy_slot_id | BIGINT | FK → strategy_slots.id, NULL 허용 | (신규) 어느 슬롯이 발생시켰는지 추적용 |
+| strategy_slot_id | BIGINT | FK → strategy_slots.id **ON DELETE SET NULL**, NULL 허용 | (신규) 어느 슬롯이 발생시켰는지 추적용. `orders.strategy_slot_id`와 같은 이유로 슬롯 삭제 시 연결만 끊는다 |
 | is_read | BOOLEAN | NOT NULL DEFAULT false | GNB 배지 카운트 소스 |
 | created_at | TIMESTAMPTZ | NOT NULL | |
 
@@ -305,7 +309,7 @@ erDiagram
 | sharpe_ratio | NUMERIC(10,4) | | |
 | trade_count | INT | | |
 | final_asset | NUMERIC(20,4) | | |
-| equity_curve | JSONB | NOT NULL | `[{date, asset}]` 시계열 — 수익곡선 차트 렌더링용 |
+| equity_curve | JSONB | NOT NULL | `[{at, asset}]` 시계열 — 수익곡선 차트 렌더링용. `at`은 날짜가 아니라 ISO8601 **시각**이다(구현 중 정정) — 분봉 백테스트는 하루에 여러 점이 나오는데 날짜로 접으면 곡선이 뭉개지기 때문이다 |
 | created_at | TIMESTAMPTZ | NOT NULL | |
 
 ### `backtest_trades` — 백테스팅 체결 상세 (신규, `06-backtesting` FR-B07)
@@ -313,7 +317,7 @@ erDiagram
 | 컬럼 | 타입 | 제약 | 설명 |
 |---|---|---|---|
 | id | BIGSERIAL | PK | |
-| backtest_result_id | BIGINT | FK → backtest_results.id | |
+| backtest_result_id | BIGINT | FK → backtest_results.id **ON DELETE CASCADE** | 결과를 지우면 체결 상세도 함께 사라진다 — 체결 상세는 결과에 종속된 값이라 독립적으로 존재할 의미가 없다 |
 | side | VARCHAR(4) | CHECK IN ('buy','sell') | |
 | price | NUMERIC(20,8) | NOT NULL | |
 | quantity | NUMERIC(28,8) | NOT NULL | |
@@ -360,7 +364,7 @@ CREATE UNIQUE INDEX ux_strategy_slots_active_coin
 
 `UNIQUE (coin_symbol, interval, opened_at)`. 인덱스: `(coin_symbol, interval, opened_at)`.
 
-Upbit는 캔들 API를 1회 최대 200개로 제한하고 레이트리밋이 있어, 백테스팅 30초 목표(FR-B05)를 지키려면 최초 조회 시 DB에 캐싱하고 이후 요청은 캐시를 우선 사용한다. 캐시에 없는 최신 구간만 API로 보충한다.
+Upbit는 캔들 API를 1회 최대 200개로 제한하고 레이트리밋이 있어, 백테스팅 60초 목표(FR-B05, 2026-09 확정)를 지키려면 최초 조회 시 DB에 캐싱하고 이후 요청은 캐시를 우선 사용한다. 캐시에 없는 최신 구간만 API로 보충한다.
 
 ---
 
@@ -388,6 +392,8 @@ Upbit는 캔들 API를 1회 최대 200개로 제한하고 레이트리밋이 있
 ```
 
 **사용처**: `03-manual-trading`의 잔고 표시·주문 검증, `07-auto-trading`의 슬롯 실행 시점 재검증 → **가용 원화**. `05-deposit-withdraw`의 출금 검증, `07-auto-trading`의 슬롯 활성화(ON) 시점 검증 → **출금 가능액**. `08-portfolio`의 요약 카드는 가용 원화 기준.
+
+**동시성 주의**: 위 파생식은 조회 시점 값이라, "조회 → 검증 → INSERT/UPDATE" 사이에 틈이 있으면 동시에 들어온 두 요청이 서로의 동결분을 못 본 채 함께 통과해 잔고를 초과할 수 있다(TOCTOU). `services/orders.py`의 `create_order`는 검증 직전 `balances`(매수) 또는 `holdings`(매도) 행을 `SELECT ... FOR UPDATE`로 잠가 같은 유저의 동시 주문 생성을 직렬화한다 — 이 파생식을 새로 쓰는 05(출금 검증)·07(슬롯 활성화 검증)도 INSERT/UPDATE 직전에 동일하게 대상 행을 잠가야 한다.
 
 ### 3.2 체결 비용 규칙 (수수료)
 
@@ -422,7 +428,7 @@ Upbit는 캔들 API를 1회 최대 200개로 제한하고 레이트리밋이 있
 | 이벤트 | 처리 |
 |---|---|
 | 회원 탈퇴 (`04-settings`) | `users` 행 삭제, 하위 전 테이블 `ON DELETE CASCADE`로 함께 삭제 (하드 삭제) |
-| 모의투자 초기화 (`08-portfolio`) | 처리 순서: ① 활성(`is_active=true`) `strategy_slots`를 전부 `is_active=false`로 전환하고 `state`를 `{}`로 리셋 (진행 중이던 그리드/DCA 상태가 초기화된 `holdings`와 어긋나는 것을 방지) → ② `orders` / `holdings` / `deposits_withdrawals` 삭제 → ③ `balances`를 초기 시드머니 값으로 리셋. `users` / `backtest_results`, 그리고 `strategy_slots` 행 자체(설정값)는 보존 — 비활성화만 될 뿐 삭제되지 않는다 |
+| 모의투자 초기화 (`08-portfolio`) | **보류** — self-service 초기화는 프로젝트 방향과 맞지 않아 08 범위에서 제외했다 (사유·재검토 조건은 [08-portfolio.md](features/08-portfolio.md) 6장). 추후 관리자 기능으로 다시 설계할 때 처리 순서를 여기에 확정한다 — 그때 잠금 순서 규칙([09-execution-engine.md](features/09-execution-engine.md) 3.4절)을 따라야 한다는 점만 미리 남긴다 |
 
 ### 3.5 인덱스 요약
 
@@ -455,7 +461,16 @@ Upbit는 캔들 API를 1회 최대 200개로 제한하고 레이트리밋이 있
 - `grid`/`dca` 키는 해당 `strategy_type`일 때만 존재한다.
 - 모든 수치는 부동소수점 오차 방지를 위해 문자열로 저장한다 (3.3절 타입 컨벤션과 동일 취지).
 - 청산(손절·익절·그리드 이탈) 시 매도 수량은 `min(state.position.quantity, holdings.quantity)`로 상한을 건다 — 상세 규칙은 [07-auto-trading.md](features/07-auto-trading.md).
-- 슬롯 OFF 시 `state.position`은 유지한다 (재ON 시 이어서 관리). 모의투자 초기화 시에만 `{}`로 리셋한다 (3.4절).
+- 슬롯 OFF 시 `state.position`은 유지한다 (재ON 시 이어서 관리). 다만 OFF인 사이 그 코인을 수동 매도했을 수 있으므로, 재ON 시점에 `holdings.quantity`와 대조해 실제 보유량까지 낮춘다 ([07-auto-trading.md](features/07-auto-trading.md) 4.2절 — 보정하지 않으면 슬롯이 있지도 않은 포지션을 들고 있다고 믿어 재진입도 청산도 못 하게 된다).
+
+### 3.7 예약가 주문 (`order_type='reserved'`)
+
+업비트의 "예약가 주문"과 동일한 스탑 주문이다. 감시가격(`trigger_price`)에 현재가가 도달하면 주문가격(`price`)으로 지정가 주문이 자동 생성되는 방식 — 새 체결 경로를 만들지 않고 **기존 지정가 체결 인프라를 그대로 재사용**한다.
+
+1. 주문 생성 시점의 현재가와 감시가격을 비교해 `trigger_direction`을 1회 확정한다 — 감시가격이 현재가보다 높으면 `rising`(상승 돌파 대기), 낮으면 `falling`(하락 대기). 같으면 방향이 모호하므로 생성 자체를 거부한다. 이후 이 값을 그대로 쓰며 재계산하지 않는다.
+2. [09-execution-engine.md](features/09-execution-engine.md)의 체결 엔진이 매 시세 틱마다, 기존 지정가 매칭보다 먼저 예약가 주문을 검사한다: `rising`이면 현재가≥감시가격, `falling`이면 현재가≤감시가격일 때 조건 충족.
+3. 조건 충족 시 조건부 `UPDATE orders SET order_type='limit' WHERE id=... AND status='pending' AND order_type='reserved'`로 **`limit`으로 승격만** 시킨다 (체결 아님, 취소 요청과의 경쟁은 이 조건부 UPDATE로 방지). 승격 직후 같은 틱에서 기존 지정가 매칭이 이어서 실행되므로, 주문가격 조건까지 이미 만족하면 같은 틱에 체결까지 이어질 수 있다.
+4. 체결된 뒤에도 `order_type`은 `limit`으로 남고 `trigger_price`/`trigger_direction`은 이력으로 보존된다.
 
 ---
 
