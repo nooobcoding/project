@@ -8,6 +8,7 @@ from app.database import get_session
 from app.schemas.account import AccountResponse, PasswordChangeRequest
 from app.services.account import (
     CurrentPasswordIncorrectError,
+    NewPasswordSameAsCurrentError,
     change_password,
     delete_account,
 )
@@ -34,6 +35,11 @@ def patch_password(
         raise HTTPException(
             status_code=http_status.HTTP_400_BAD_REQUEST,
             detail="현재 비밀번호가 올바르지 않습니다.",
+        )
+    except NewPasswordSameAsCurrentError:
+        raise HTTPException(
+            status_code=http_status.HTTP_400_BAD_REQUEST,
+            detail="새 비밀번호가 현재 비밀번호와 같습니다.",
         )
     return {"message": "비밀번호가 변경되었습니다."}
 

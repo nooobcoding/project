@@ -33,9 +33,14 @@ export function AccountSettingsPanel({ onToast }: AccountSettingsPanelProps) {
   }, [token]);
 
   const newPasswordError =
-    newPassword.length > 0 && !PASSWORD_PATTERN.test(newPassword)
-      ? "비밀번호는 8자 이상, 영문과 숫자를 포함해야 합니다."
-      : undefined;
+    newPassword.length === 0
+      ? undefined
+      : !PASSWORD_PATTERN.test(newPassword)
+        ? "비밀번호는 8자 이상, 영문과 숫자를 포함해야 합니다."
+        // 패턴 오류를 먼저 보여준다 — 둘 다 해당하면 "너무 짧다"보다 이쪽이 덜 급하다.
+        : newPassword === currentPassword
+          ? "새 비밀번호는 현재 비밀번호와 달라야 합니다."
+          : undefined;
   const newPasswordConfirmError =
     newPasswordConfirm.length > 0 && newPasswordConfirm !== newPassword
       ? "비밀번호가 일치하지 않습니다."
@@ -44,6 +49,7 @@ export function AccountSettingsPanel({ onToast }: AccountSettingsPanelProps) {
   const isValid =
     currentPassword.length > 0 &&
     PASSWORD_PATTERN.test(newPassword) &&
+    newPassword !== currentPassword &&
     newPasswordConfirm === newPassword;
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
@@ -62,7 +68,10 @@ export function AccountSettingsPanel({ onToast }: AccountSettingsPanelProps) {
       setNewPasswordConfirm("");
       onToast("비밀번호가 변경되었습니다.");
     } catch (err) {
-      if (err instanceof ApiError && err.status === 400) {
+      // 새 비밀번호가 현재 비밀번호와 같다는 오류(위에서 이미 막아 보통 도달하지 않음 —
+      // 제출 직전 다른 곳에서 비밀번호가 바뀐 경우 등의 안전망)는 "현재 비밀번호" 필드
+      // 오류가 아니므로 토스트로만 보여준다.
+      if (err instanceof ApiError && err.status === 400 && err.message.includes("현재 비밀번호가 올바르지")) {
         setCurrentPasswordError(err.message);
       } else {
         onToast(err instanceof ApiError ? err.message : "비밀번호 변경에 실패했습니다.");
@@ -103,14 +112,17 @@ export function AccountSettingsPanel({ onToast }: AccountSettingsPanelProps) {
           value={newPassword}
           onChange={setNewPassword}
           error={newPasswordError}
-          autoComplete="new-password"
+          // "new-password"를 주면 크롬이 이 필드를 새 비밀번호 입력으로 인식해 자체 생성
+          // 비밀번호를 제안하는 팝업을 띄운다. 이 화면은 사용자가 직접 정한 비밀번호를
+          // 입력받는 게 목적이라 "off"로 그 제안을 끈다.
+          autoComplete="off"
         />
         <PasswordInput
           label="새 비밀번호 확인"
           value={newPasswordConfirm}
           onChange={setNewPasswordConfirm}
           error={newPasswordConfirmError}
-          autoComplete="new-password"
+          autoComplete="off"
         />
         <button type="submit" className="auth-button" disabled={!isValid || isSubmitting}>
           {isSubmitting ? "변경 중..." : "비밀번호 변경"}
