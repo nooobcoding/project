@@ -19,9 +19,14 @@ class CoinNotFoundError(Exception):
 
 def list_coins_with_price(db: Session) -> list[dict]:
     coins = db.scalars(select(Coin).where(Coin.is_active).order_by(Coin.symbol)).all()
+    # 상장 코인 200종을 한 번에 읽는다 — 코인마다 조회하면 redis 백엔드에서 요청 하나가
+    # 200회 왕복이 된다. 표시 전용 경로라 스트림이 잠깐 멈춰도 마지막 값을 보여준다.
+    cached_prices = price_cache.get_cached_prices(
+        [coin.symbol for coin in coins], allow_stale=True
+    )
     result = []
     for coin in coins:
-        cached = price_cache.get_cached_price(coin.symbol)
+        cached = cached_prices.get(coin.symbol)
         result.append(
             {
                 "symbol": coin.symbol,

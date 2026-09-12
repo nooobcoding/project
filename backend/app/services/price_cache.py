@@ -22,6 +22,7 @@ docs-scale/02-market-data.md 5장). `PRICE_CACHE_BACKEND=memory`(기본)`|redis`
 일이 없어야 한다는 게 이 모듈의 핵심 계약이다.
 """
 
+import asyncio
 import json
 import logging
 import time
@@ -70,12 +71,21 @@ def _is_feed_stale(last_tick_at: float) -> bool:
     return last_tick_at <= 0 or (time.time() - last_tick_at) > settings.price_max_age_seconds
 
 
-def set_price(symbol: str, tick: dict) -> None:
-    """새 틱을 캐시에 반영한다. 지금은 `market-data` 역할(price_stream.py)만 호출한다.
+async def store_tick(symbol: str, tick: dict) -> None:
+    """시세 수신 루프(price_stream.py)에서 틱 하나를 캐시에 반영한다.
 
-    Upbit WS 수신 루프 안에서 부르므로 여기서 블로킹하면 그 루프 전체가 밀린다 — redis
-    클라이언트 I/O는 반드시 `asyncio.to_thread`로 감싸 호출할 것 (price_stream.py 참고).
+    redis 백엔드에서만 스레드로 넘긴다 — 소켓 I/O라 이 상시 루프를 막기 때문이다. memory
+    백엔드는 dict 대입 한 줄이라 스레드로 넘기는 비용이 일하는 비용보다 크다 (틱마다 도는
+    경로라 기본 설정에서 그 오버헤드만 남는다). tick_bus.publish와 같은 모양이다.
     """
+    if settings.price_cache_backend == "redis":
+        await asyncio.to_thread(set_price, symbol, tick)
+    else:
+        set_price(symbol, tick)
+
+
+def set_price(symbol: str, tick: dict) -> None:
+    """새 틱을 캐시에 반영한다 (동기). 시세 루프에서는 `store_tick`을 쓸 것."""
     global _memory_last_tick_at
 
     now = time.time()
@@ -106,17 +116,23 @@ def delete_price(symbol: str) -> None:
         _memory_cache.pop(symbol, None)
 
 
-def get_cached_price(symbol: str) -> dict | None:
+def get_cached_price(symbol: str, *, allow_stale: bool = False) -> dict | None:
     """호출부는 반환값이 `None`이면 "시세 없음"으로만 처리하면 된다 — 스트림 중단도 Redis
     장애도 값 손상도 전부 여기에 접혀 들어온다 (자금 경로는 이미 `None`을 스킵/거부로 처리한다)."""
-    return get_cached_prices([symbol]).get(symbol)
+    return get_cached_prices([symbol], allow_stale=allow_stale).get(symbol)
 
 
-def get_cached_prices(symbols: Iterable[str]) -> dict[str, dict]:
+def get_cached_prices(symbols: Iterable[str], *, allow_stale: bool = False) -> dict[str, dict]:
     """여러 심볼을 한 번에 읽는다. 시세를 못 주는 심볼은 결과에서 빠진다.
 
     `/ws/prices`는 접속 한 번에 수백 심볼을 조회하므로, 심볼마다 왕복하면 그 수만큼
     Redis 왕복이 생긴다. 여기서 MGET 한 번으로 묶는다.
+
+    `allow_stale=True`는 **화면 표시 경로 전용**이다 (02-market-data.md 3.3절 — 자금 경로는
+    거부하되 표시 경로는 완화해도 된다). 스트림이 멈춰도 마지막으로 받은 값을 그대로 준다.
+    이게 없으면 대시보드·포트폴리오가 시세 대신 매수평단으로 되돌아가는데, 그러면 "시세를
+    모른다"가 화면에는 "손익 0%"나 전일 종가 대비 엉뚱한 수익률로 나온다 — 모르는 것을
+    숫자로 지어내는 셈이라 표시하지 않느니만 못하다.
     """
     symbol_list = list(symbols)
     if not symbol_list:
@@ -139,7 +155,7 @@ def get_cached_prices(symbols: Iterable[str]) -> dict[str, dict]:
             symbol: _memory_cache[symbol] for symbol in symbol_list if symbol in _memory_cache
         }
 
-    if _is_feed_stale(last_tick_at):
+    if not allow_stale and _is_feed_stale(last_tick_at):
         # 스트림이 멈췄다 — 남아 있는 값은 전부 낡은 값이다 (market-data 페일오버 중이거나
         # 죽었다). 낡은 가격으로 자금을 움직이는 것보다 멈추는 편이 낫다.
         return {}

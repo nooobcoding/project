@@ -17,7 +17,9 @@ from app.models import WorkerHeartbeat
 logger = logging.getLogger(__name__)
 
 # 프로세스가 여러 개로 늘어나도(로드맵 4·7단계) 호스트명+PID면 충분히 구분된다.
-_PROCESS_ID = f"{socket.gethostname()}:{os.getpid()}"[:64]
+# 자르는 쪽은 반드시 호스트명이다 — 전체를 자르면 호스트명이 긴 환경(쿠버네티스 파드 등)에서
+# PID가 통째로 날아가 같은 호스트의 두 프로세스가 한 행을 공유하게 된다.
+_PROCESS_ID = f"{socket.gethostname()[:50]}:{os.getpid()}"
 
 
 def record_tick(

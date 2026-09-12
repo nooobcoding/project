@@ -14,7 +14,15 @@ from app.models.base import Base
 class WorkerHeartbeat(Base):
     __tablename__ = "worker_heartbeats"
     __table_args__ = (
-        UniqueConstraint("role", "shard_id", "process_id", name="uq_worker_heartbeats_role_shard_process"),
+        # NULLS NOT DISTINCT가 없으면 제약이 무력하다 — 샤드가 없는 역할은 shard_id가
+        # NULL인데 PostgreSQL은 NULL끼리 서로 다른 값으로 보기 때문이다.
+        UniqueConstraint(
+            "role",
+            "shard_id",
+            "process_id",
+            name="uq_worker_heartbeats_role_shard_process",
+            postgresql_nulls_not_distinct=True,
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)

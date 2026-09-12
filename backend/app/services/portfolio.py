@@ -30,7 +30,9 @@ class InvalidPeriodError(Exception):
 
 
 def _current_price(holding: Holding) -> Decimal:
-    cached = price_cache.get_cached_price(holding.coin_symbol)
+    # 표시 전용이라 스트림이 멈춰도 마지막 값을 쓴다 — 매수평단으로 되돌리면 전 종목이
+    # 손익 0%로 보여 "시세를 모른다"가 "본전"으로 둔갑한다 (02-market-data.md 3.3절).
+    cached = price_cache.get_cached_price(holding.coin_symbol, allow_stale=True)
     if cached and "trade_price" in cached:
         return Decimal(str(cached["trade_price"]))
     return holding.avg_buy_price

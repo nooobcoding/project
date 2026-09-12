@@ -21,6 +21,11 @@ logger = logging.getLogger(__name__)
 TIMEOUT_SECONDS = 2
 
 
+# 유휴 연결에 주기적으로 PING을 보내 죽은 연결을 걷어낸다. 구독 쪽에서 특히 중요하다
+# (아래 create_async_redis 주석 참고).
+HEALTH_CHECK_INTERVAL_SECONDS = 30
+
+
 @lru_cache
 def get_redis() -> redis.Redis:
     """동기 클라이언트 — 시세 캐시 읽기/쓰기와 틱 발행이 쓴다."""
@@ -29,6 +34,8 @@ def get_redis() -> redis.Redis:
         decode_responses=True,
         socket_connect_timeout=TIMEOUT_SECONDS,
         socket_timeout=TIMEOUT_SECONDS,
+        socket_keepalive=True,
+        health_check_interval=HEALTH_CHECK_INTERVAL_SECONDS,
     )
 
 
@@ -37,9 +44,16 @@ def create_async_redis() -> redis.asyncio.Redis:
 
     구독은 오래 열어두는 연결이라 `socket_timeout`을 걸지 않는다. 걸면 틱이 뜸한 시간대에
     타임아웃이 그대로 연결 끊김이 된다 — 읽기 타임아웃은 여기서만 예외다.
+
+    **대신 health check가 필수다.** 읽기 타임아웃이 없으면 half-open 소켓(네트워크 블립,
+    RST 없는 Redis 재시작)을 아무도 알아채지 못한다 — `get_message()`는 영영 `None`만
+    돌려주고, 구독 심볼이 그대로면 쓰기도 없어서 예외가 안 난다. 재연결 분기가 안 도는 채로
+    그 api 프로세스에 붙은 모든 화면이 조용히 멈춘다. PING이 그 침묵을 깬다.
     """
     return redis.asyncio.Redis.from_url(
         settings.redis_url,
         decode_responses=True,
         socket_connect_timeout=TIMEOUT_SECONDS,
+        socket_keepalive=True,
+        health_check_interval=HEALTH_CHECK_INTERVAL_SECONDS,
     )
