@@ -1,11 +1,15 @@
 """워커의 순수 판단 로직 검증 (07 계획 Step 2B). DB·네트워크 없이 돈다.
 
-주문 수량 산정과 손절·익절 판정은 돈이 직접 걸리는 계산이라 경계값을 특히 촘촘히 본다.
+주문 수량 산정은 돈이 직접 걸리는 계산이라 경계값을 특히 촘촘히 본다. 손절·익절 판정은
+`strategy_engine/exits.py`로 옮겨졌고 검증도 tests/test_exits.py로 따라갔다 (06 계획 A-1).
+
+`calc_buy_quantity`는 실제 정의가 `strategy_engine/costs.py`에 있지만(백테스팅과 공유), 워커
+경로로 들어오는 호출이 그대로 유지되는지까지 함께 보기 위해 워커 모듈에서 임포트한다.
 """
 
 from decimal import Decimal
 
-from app.strategy_engine.worker import calc_buy_quantity, decide_exit
+from app.strategy_engine.worker import calc_buy_quantity
 
 FEE_RATE = Decimal("0.0005")
 
@@ -48,36 +52,3 @@ def test_calc_buy_quantity_returns_zero_when_price_too_high():
 def test_calc_buy_quantity_guards_zero_price():
     """시세 캐시가 0을 주는 이상 상황에서 0으로 나누지 않는다."""
     assert calc_buy_quantity(Decimal("1000000"), Decimal("0"), FEE_RATE) == Decimal(0)
-
-
-# ── 손절·익절 판정 ──────────────────────────────────────────────────────────
-
-
-def test_decide_exit_take_profit_on_reaching_threshold():
-    """진입가 100,000 / 익절 5% → 105,000 도달 시 익절 (06-backtesting.md 2.5절)."""
-    assert decide_exit(Decimal("100000"), Decimal("105000"), None, Decimal("5")) == "take_profit"
-
-
-def test_decide_exit_stop_loss_on_reaching_threshold():
-    """손절 기준은 양수로 저장되고 -X% 도달 시 발동한다."""
-    assert decide_exit(Decimal("100000"), Decimal("95000"), Decimal("5"), None) == "stop_loss"
-
-
-def test_decide_exit_none_within_band():
-    assert decide_exit(Decimal("100000"), Decimal("102000"), Decimal("5"), Decimal("5")) is None
-
-
-def test_decide_exit_ignores_unset_thresholds():
-    """손절·익절을 설정하지 않은 슬롯은 아무리 움직여도 청산하지 않는다."""
-    assert decide_exit(Decimal("100000"), Decimal("10"), None, None) is None
-    assert decide_exit(Decimal("100000"), Decimal("100000000"), None, None) is None
-
-
-def test_decide_exit_take_profit_wins_when_both_would_trigger():
-    """설정이 이상해 둘 다 걸리는 경우(익절≤0 등)에도 판정이 흔들리지 않게 익절을 먼저 본다."""
-    assert decide_exit(Decimal("100000"), Decimal("105000"), Decimal("-100"), Decimal("5")) == "take_profit"
-
-
-def test_decide_exit_guards_zero_average_price():
-    """평단 0(포지션이 비정상)일 때 0으로 나누지 않는다."""
-    assert decide_exit(Decimal("0"), Decimal("100"), Decimal("5"), Decimal("5")) is None

@@ -9,14 +9,14 @@ interface NavItem {
 }
 
 // 00-overview.md 6장 원칙 6 — GNB는 화면마다 새로 그리지 않고 공통으로 고정한다.
-// 아직 구현되지 않은 화면(06~08)은 ShortcutChips와 동일하게 비활성 링크로만 노출하고,
+// 아직 구현되지 않은 화면은 ShortcutChips와 동일하게 비활성 링크로만 노출하고,
 // 해당 로드맵 항목이 완료되면 isBuilt만 true로 바꾸면 된다.
 const NAV_ITEMS: NavItem[] = [
   { label: "대시보드", path: "/dashboard", isBuilt: true },
   { label: "수동매매", path: "/trade", isBuilt: true },
   { label: "자동매매", path: "/auto", isBuilt: true },
-  { label: "백테스팅", path: "/backtest", isBuilt: false },
-  { label: "포트폴리오", path: "/portfolio", isBuilt: false },
+  { label: "백테스팅", path: "/backtest", isBuilt: true },
+  { label: "포트폴리오", path: "/portfolio", isBuilt: true },
   { label: "입출금", path: "/deposit-withdraw", isBuilt: true },
 ];
 

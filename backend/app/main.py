@@ -20,6 +20,7 @@ from app.config import settings
 from app.routers import (
     account,
     auth,
+    backtest,
     candles,
     coins,
     dashboard,
@@ -27,6 +28,7 @@ from app.routers import (
     notifications,
     orderbook,
     orders,
+    portfolio,
     prices,
     strategy_slots,
     wallet,
@@ -81,6 +83,10 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # 기본값은 CORS-safelisted 응답 헤더만 노출한다 — Content-Disposition은 그 목록에
+    # 없어 명시하지 않으면 브라우저 JS가 못 읽는다(08-portfolio CSV 내보내기가 파일명을
+    # 이 헤더에서 파싱한다, api/portfolio.ts downloadPortfolioTradesCsv).
+    expose_headers=["Content-Disposition"],
 )
 
 app.include_router(auth.router)
@@ -95,6 +101,8 @@ app.include_router(notification_settings.router)
 app.include_router(notifications.router)
 app.include_router(wallet.router)
 app.include_router(strategy_slots.router)
+app.include_router(backtest.router)
+app.include_router(portfolio.router)
 
 
 @app.get("/health")

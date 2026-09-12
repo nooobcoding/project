@@ -12,7 +12,10 @@
 전부 소수로만 다룬다. 변환을 누락한 채 % 단위 값을 그대로 곱하면 100배 오차가 난다.
 """
 
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal
+
+# 주문 수량 자릿수 — orders.quantity NUMERIC(28,8) (01-erd.md 3.3절)
+_QUANTITY_STEP = Decimal("0.00000001")
 
 
 def percent_to_decimal(rate_percent: Decimal) -> Decimal:
@@ -31,9 +34,29 @@ def calc_fill_price(theoretical_price: Decimal, side: str, slippage_rate: Decima
     return theoretical_price * (1 - slippage_rate)
 
 
+def calc_fee(price: Decimal, quantity: Decimal, fee_rate: Decimal) -> Decimal:
+    """체결 수수료(원화) (01-erd.md 3.2절). 매수·매도 모두 체결금액에 같은 율을 곱한다."""
+    return price * quantity * fee_rate
+
+
 def calc_buy_amount(price: Decimal, quantity: Decimal, fee_rate: Decimal) -> Decimal:
     """매수 체결 시 원화 차감액 (01-erd.md 3.2절)."""
     return price * quantity * (1 + fee_rate)
+
+
+def calc_buy_quantity(budget: Decimal, price: Decimal, fee_rate: Decimal) -> Decimal:
+    """수수료까지 포함한 총 지출이 `budget`을 넘지 않는 최대 매수 수량.
+
+    `calc_buy_amount`(= price × quantity × (1 + fee_rate))의 역산이다. 소수점 8자리에서
+    내림한다 — 올림하면 예산을 초과한다.
+
+    실매매 워커(배정액만큼 시장가 매수)와 백테스팅 시뮬레이터가 같은 함수를 써야 "백테스트에선
+    살 수 있었는데 실매매에선 잔고가 모자란" 식의 괴리가 생기지 않는다 (06-backtesting.md 2.6절).
+    """
+    if price <= 0:
+        return Decimal(0)
+    raw = budget / (price * (1 + fee_rate))
+    return raw.quantize(_QUANTITY_STEP, rounding=ROUND_DOWN)
 
 
 def calc_sell_amount(price: Decimal, quantity: Decimal, fee_rate: Decimal) -> Decimal:

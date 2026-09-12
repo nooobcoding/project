@@ -80,6 +80,35 @@ def lines_match_params(lines: list[dict[str, Any]] | None, params: dict[str, Any
     return [line["price"] for line in lines] == expected
 
 
+def mark_line_filled(
+    lines: list[dict[str, Any]], line_index: int, quantity: Decimal
+) -> list[dict[str, Any]]:
+    """라인 하나를 "채움"으로 표시한 **새 목록**을 만든다 (원본은 건드리지 않는다).
+
+    기록하는 수량은 "살 예정이던 양"이 아니라 **실제 체결 수량**이어야 한다 (07 계획 Step 4) —
+    그래야 라인과 `state.position`이 같은 체결을 근거로 갱신돼 서로 어긋나지 않는다. 라인의
+    `price`는 격자 레벨이므로 체결가로 덮어쓰지 않는다 — `lines_match_params`가 이 값으로
+    파라미터 일치를 판단하기 때문이다.
+
+    실매매(워커)와 백테스팅이 같은 함수로 라인을 갱신해야 그리드 진행이 양쪽에서 동일해진다
+    (06 계획 A-2).
+    """
+    if not lines or not 0 <= line_index < len(lines):
+        return lines
+    updated = list(lines)
+    updated[line_index] = {**lines[line_index], "filled": True, "quantity": str(quantity)}
+    return updated
+
+
+def mark_line_empty(lines: list[dict[str, Any]], line_index: int) -> list[dict[str, Any]]:
+    """라인 하나를 "비움"으로 표시한 새 목록을 만든다 (매도 체결 후)."""
+    if not lines or not 0 <= line_index < len(lines):
+        return lines
+    updated = list(lines)
+    updated[line_index] = {**lines[line_index], "filled": False, "quantity": "0"}
+    return updated
+
+
 def is_below_lower_bound(price: Decimal, params: dict[str, Any]) -> bool:
     """하한가 이탈 여부 (06-backtesting.md 2.5절 "그리드 이탈 손절")."""
     lower, _, _ = _params(params)

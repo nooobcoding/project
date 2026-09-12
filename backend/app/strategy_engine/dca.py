@@ -78,6 +78,46 @@ def is_finished(dca_state: dict[str, Any], params: dict[str, Any], invest_amount
     return False
 
 
+def advance_after_buy(
+    dca_state: dict[str, Any],
+    intent: TradeIntent,
+    fill_price: Decimal,
+    spent: Decimal,
+    now: datetime,
+    params: dict[str, Any],
+) -> dict[str, Any]:
+    """매수 체결을 진행 상태에 반영한 **새 dict**를 만든다 (원본은 건드리지 않는다).
+
+    `spent`는 **수수료까지 포함한 실제 체결액**이어야 한다 — 예산 상한(`invest_amount`)이
+    수수료를 빼놓고 쌓이면 상한을 조금씩 넘게 된다 (01-erd.md 3.2절).
+
+    다음 예정 시각은 정기 매수(`SCHEDULED_BUY`)일 때만 민다. 추가 매수는 스케줄과 무관한
+    보너스 회차라 예정 시각을 건드리면 정기 주기가 뒤로 밀려버린다.
+
+    실매매(워커)와 백테스팅이 같은 함수를 써야 분할매수 진행이 양쪽에서 동일해진다 (06 계획 A-2).
+    """
+    updated = dict(dca_state)
+    updated["executed_count"] = int(dca_state["executed_count"]) + 1
+    updated["last_buy_price"] = str(fill_price)
+    updated["spent_amount"] = str(Decimal(dca_state["spent_amount"]) + spent)
+    if intent.reason == SCHEDULED_BUY:
+        updated["next_buy_at"] = next_schedule(now, params).isoformat()
+    return updated
+
+
+def skip_scheduled_buy(
+    dca_state: dict[str, Any], now: datetime, params: dict[str, Any]
+) -> dict[str, Any]:
+    """이번 정기 회차를 사지 못했을 때(잔고 부족 등) 다음 예정 시각만 민 새 dict.
+
+    밀지 않으면 `next_buy_at`이 과거인 채로 남아 매 tick마다 같은 실패와 알림이 반복된다 —
+    이번 회차를 건너뛰고 다음 회차에서 재시도하는 편이 낫다.
+    """
+    updated = dict(dca_state)
+    updated["next_buy_at"] = next_schedule(now, params).isoformat()
+    return updated
+
+
 def evaluate(
     now: datetime,
     current_price: Decimal,
