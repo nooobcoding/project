@@ -33,8 +33,9 @@ from app.routers import (
     strategy_slots,
     wallet,
 )
+from app.services import tick_bus
 from app.services.coin_sync import sync_coins
-from app.services.price_stream import run_price_stream
+from app.services.price_stream import run_market_data
 from app.strategy_engine.worker import TICK_INTERVAL_SECONDS, run_tick
 
 logger = logging.getLogger(__name__)
@@ -53,15 +54,29 @@ def _run_coin_sync_job() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """PROCESS_ROLES에 켜진 역할만 기동한다 (확장판 00-architecture.md 2.1절, 07-roadmap.md
-    1단계). 기본값은 전 역할 활성이라 로컬 개발은 지금까지와 동일하게 coins 동기화·자동매매
-    워커·시세 스트림(price_stream)이 전부 한 프로세스에서 상시 돈다.
+    1·4단계). 기본값은 전 역할 활성이라 로컬 개발은 지금까지와 동일하게 coins 동기화·자동매매
+    워커·시세 스트림이 전부 한 프로세스에서 상시 돈다.
 
-    `matcher`·`api` 역할은 아직 독립된 기동 경로가 없다 — matcher는 4단계까지 market-data의
-    시세 수신 루프 안에 묶여 있고(00-architecture.md 1장 ③), api는 이 프로세스 자체라 항상
-    켜져 있다. 두 역할 이름은 설정에만 미리 존재하고, 실제로 무언가를 켜고 끄기 시작하는 건
-    각각 5단계·4단계부터다.
+    `market-data`는 켜져 있어도 advisory lock 리더로 선출된 프로세스만 실제로 Upbit에
+    붙는다 (services/price_stream.py). `api`는 `PRICE_CACHE_BACKEND=redis`일 때만 별도
+    기동 경로를 갖는다 — 다른 프로세스가 발행한 틱을 구독해 자기 WebSocket 클라이언트에게
+    전달해야 하기 때문이다. `memory`일 때는 같은 프로세스의 스트림이 직접 넣어주므로 구독할
+    것이 없다 (services/tick_bus.py).
+
+    `matcher`는 아직 독립된 기동 경로가 없다 — 5단계까지 market-data의 시세 수신 루프 안에
+    묶여 있다 (00-architecture.md 1장 ③).
     """
     roles = settings.process_roles
+
+    if "market-data" not in roles and settings.price_cache_backend == "memory":
+        # memory 캐시는 프로세스 안에만 있다 — 이 프로세스에는 시세를 쓰는 주체가 없으므로
+        # 모든 시세 조회가 영영 "시세 없음"이 된다. 역할을 나눴으면 redis로 가야 한다.
+        # 조용히 실패하면 "주문이 자꾸 거부된다"로만 보이므로 기동 시점에 못 박아둔다
+        # (06-observability.md 5장 조용한 실패 금지).
+        logger.warning(
+            "PROCESS_ROLES에 market-data가 없는데 PRICE_CACHE_BACKEND=memory다 — "
+            "이 프로세스는 시세를 전혀 못 읽는다. 역할을 나눴다면 PRICE_CACHE_BACKEND=redis로 설정할 것."
+        )
 
     if "scheduler" in roles:
         _run_coin_sync_job()
@@ -80,16 +95,19 @@ async def lifespan(app: FastAPI):
 
     scheduler.start()
 
-    price_stream_task = (
-        asyncio.create_task(run_price_stream()) if "market-data" in roles else None
-    )
+    background_tasks = []
+    if "market-data" in roles:
+        background_tasks.append(asyncio.create_task(run_market_data()))
+    if "api" in roles and settings.price_cache_backend == "redis":
+        background_tasks.append(asyncio.create_task(tick_bus.run_tick_subscriber()))
 
     yield
 
-    if price_stream_task is not None:
-        price_stream_task.cancel()
+    for task in background_tasks:
+        task.cancel()
+    for task in background_tasks:
         with suppress(asyncio.CancelledError):
-            await price_stream_task
+            await task
     scheduler.shutdown()
 
 

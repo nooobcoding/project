@@ -1,36 +1,46 @@
-"""02-dashboard 시세 스트림 — Upbit 공개 시세 WebSocket을 상시 구독해 시세 캐시를 갱신한다.
+"""`market-data` 역할 — Upbit 공개 시세 WebSocket을 상시 구독해 시세 캐시를 갱신한다.
 
 00-overview.md 3장의 "시세 캐시" 갱신 주체다. 클라이언트 접속 여부와 무관하게 항상
 갱신되어야 하므로(체결 엔진·자동매매 손절/익절이 이 캐시를 쓰는 09/07의 전제),
 main.py의 lifespan에서 앱 기동과 함께 백그라운드 태스크로 시작한다. `/ws/prices`는
 이 캐시의 소비자일 뿐 Upbit 구독 대상을 결정하지 않는다.
 
-캐시 저장소 자체는 services/price_cache.py로 분리돼 있다 (확장판 02-market-data.md 5장)
-— 이 모듈은 그 캐시에 쓰기만 하고, 읽기(get_cached_price)는 그쪽 모듈이 맡는다.
+확장판에서 이 모듈이 맡는 경계 (docs-scale/02-market-data.md 3장):
+
+- **캐시 저장소는 services/price_cache.py** — 여기서는 쓰기만 하고 읽기는 그쪽이 맡는다.
+- **프론트 전달은 services/tick_bus.py** — 같은 프로세스에 직접 넣을지 `ticks:{symbol}`로
+  발행할지는 그쪽이 정한다.
+- **정확히 1개만 활성이어야 한다** — 여러 프로세스가 Upbit WS에 붙어도 기능은 깨지지 않지만
+  같은 틱이 여러 번 발행되어 매칭이 중복으로 돈다. 그래서 advisory lock 리더 선출을 거친
+  프로세스만 스트림을 돌린다 (`run_market_data`, 같은 문서 3.2절).
+- **체결 엔진 훅은 아직 여기 남아 있다** — 5단계에서 `matcher` 역할이 `ticks:{symbol}`을
+  구독하는 형태로 떼어낸다 (같은 문서 4장).
 """
 
 import asyncio
 import json
 import logging
 import uuid
+from contextlib import suppress
 from decimal import Decimal
 from typing import Iterable
 
 import websockets
-from fastapi import WebSocket
 from sqlalchemy import select
 
 from app.database import session_scope
 from app.models import Coin
-from app.services import matcher, price_cache
+from app.services import leader, matcher, price_cache, tick_bus
 
 logger = logging.getLogger(__name__)
 
 UPBIT_TICKER_WS_URL = "wss://api.upbit.com/websocket/v1"
 RECONNECT_DELAY_SECONDS = 5
 RESUBSCRIBE_INTERVAL_SECONDS = 300  # coins 동기화 잡 반영 주기 (00-overview.md 3장)
-
-_subscribers: dict[WebSocket, tuple[set[str], "asyncio.Queue[dict]"]] = {}
+LEADER_RETRY_INTERVAL_SECONDS = 10
+# 리더십 재확인 주기. 짧게 잡을수록 "락을 잃은 줄 모르고 계속 스트리밍하는" 창이 줄지만,
+# 그 창에 생기는 피해는 틱 중복 발행뿐이라(자금 경로가 아니다) 30초면 충분하다.
+LEADERSHIP_CHECK_INTERVAL_SECONDS = 30
 
 
 def _active_market_codes() -> dict[str, str]:
@@ -48,12 +58,6 @@ def _build_subscribe_frame(market_codes: Iterable[str]) -> str:
             {"format": "DEFAULT"},
         ]
     )
-
-
-async def _fan_out(symbol: str, tick: dict) -> None:
-    for symbols, queue in list(_subscribers.values()):
-        if symbol in symbols:
-            await queue.put(tick)
 
 
 def _to_tick(message: dict, symbol: str) -> dict:
@@ -104,7 +108,7 @@ async def _stream_once() -> None:
             # memory 백엔드는 dict 대입이라 즉시 반환하지만, redis 백엔드는 소켓 I/O라
             # 이 상시 루프를 막을 수 있다 — to_thread로 감싼다 (아래 매칭 훅과 동일 원칙).
             await asyncio.to_thread(price_cache.set_price, symbol, tick)
-            await _fan_out(symbol, tick)
+            await tick_bus.publish(symbol, tick)
             # 체결 엔진 훅 — 동기 DB 작업이 이 상시 루프를 막지 않도록 별도 스레드에서 수행
             await asyncio.to_thread(_run_matcher_safely, symbol, tick["trade_price"])
 
@@ -122,11 +126,41 @@ async def run_price_stream() -> None:
             await asyncio.sleep(RECONNECT_DELAY_SECONDS)
 
 
-async def register(websocket: WebSocket, symbols: set[str]) -> "asyncio.Queue[dict]":
-    queue: asyncio.Queue = asyncio.Queue()
-    _subscribers[websocket] = (symbols, queue)
-    return queue
+async def run_market_data() -> None:
+    """`market-data` 역할 진입점 — 리더로 선출된 프로세스만 스트림을 돌린다.
+
+    리더를 못 잡은 프로세스는 대기하다가 주기적으로 다시 시도한다. 리더가 죽으면 세션이
+    끊기며 락이 풀리므로 대기 중이던 프로세스가 다음 주기에 승격한다. 승격 전까지는 시세가
+    갱신되지 않는데, 그 공백은 `price_cache`의 stale 방어가 "시세 없음"으로 막는다
+    (02-market-data.md 3.3절 — 낡은 가격으로 손절·시장가 체결이 나가는 것보다 멈추는 게 낫다).
+    """
+    lock = leader.LeaderLock("market-data")
+    while True:
+        if not await asyncio.to_thread(lock.try_acquire):
+            await asyncio.sleep(LEADER_RETRY_INTERVAL_SECONDS)
+            continue
+
+        logger.info("market-data 리더로 선출됐다 — Upbit 시세 스트림을 시작한다")
+        stream_task = asyncio.create_task(run_price_stream())
+        watchdog_task = asyncio.create_task(_watch_leadership(lock))
+        try:
+            # 스트림이 먼저 끝나면 스트림 자체가 죽은 것이고, 감시가 먼저 끝나면 리더십을
+            # 잃은 것이다. 어느 쪽이든 리더 자리를 놓고 처음부터 다시 시작한다.
+            await asyncio.wait(
+                {stream_task, watchdog_task}, return_when=asyncio.FIRST_COMPLETED
+            )
+        finally:
+            for task in (stream_task, watchdog_task):
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+            await asyncio.to_thread(lock.release)
+        logger.warning("market-data 리더십이 끝났다 — 스트림을 멈추고 재선출을 기다린다")
 
 
-def unregister(websocket: WebSocket) -> None:
-    _subscribers.pop(websocket, None)
+async def _watch_leadership(lock: leader.LeaderLock) -> None:
+    """리더십을 잃으면 반환한다 (03-worker-orchestration.md 2.2절 소유 재확인)."""
+    while True:
+        await asyncio.sleep(LEADERSHIP_CHECK_INTERVAL_SECONDS)
+        if not await asyncio.to_thread(lock.is_held):
+            return

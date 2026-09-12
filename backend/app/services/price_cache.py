@@ -19,30 +19,13 @@ docs-scale/02-market-data.md 5장). `PRICE_CACHE_BACKEND=memory`(기본)`|redis`
 import json
 import logging
 import time
-from functools import lru_cache
 
 from app.config import settings
+from app.services.redis_client import get_redis
 
 logger = logging.getLogger(__name__)
 
 _memory_cache: dict[str, dict] = {}
-
-# Redis가 응답 없이 멈추면 이 상시 루프도 같이 멈추므로(price_stream.py의 시세 수신 등)
-# 소켓 타임아웃을 짧게 못 박는다 — 무한 대기 대신 예외로 실패해 아래에서 "시세 없음"으로
-# 접는다.
-_REDIS_TIMEOUT_SECONDS = 2
-
-
-@lru_cache
-def _redis_client():
-    import redis
-
-    return redis.Redis.from_url(
-        settings.redis_url,
-        decode_responses=True,
-        socket_connect_timeout=_REDIS_TIMEOUT_SECONDS,
-        socket_timeout=_REDIS_TIMEOUT_SECONDS,
-    )
 
 
 def _redis_key(symbol: str) -> str:
@@ -62,7 +45,7 @@ def set_price(symbol: str, tick: dict) -> None:
     payload = {**tick, "received_at": time.time()}
     if settings.price_cache_backend == "redis":
         try:
-            _redis_client().set(_redis_key(symbol), json.dumps(payload))
+            get_redis().set(_redis_key(symbol), json.dumps(payload))
         except Exception:
             logger.warning("시세 캐시 쓰기 실패 (symbol=%s) — 다음 틱에서 재시도", symbol)
     else:
@@ -74,7 +57,7 @@ def delete_price(symbol: str) -> None:
     치울 때만 쓴다 (`set_price`처럼 백엔드를 가리지 않아야 테스트가 redis에서도 격리된다)."""
     if settings.price_cache_backend == "redis":
         try:
-            _redis_client().delete(_redis_key(symbol))
+            get_redis().delete(_redis_key(symbol))
         except Exception:
             logger.warning("시세 캐시 삭제 실패 (symbol=%s)", symbol)
     else:
@@ -86,7 +69,7 @@ def get_cached_price(symbol: str) -> dict | None:
     포함된 결과다 (자금 경로는 이미 `None`을 스킵/거부로 처리하고 있다)."""
     if settings.price_cache_backend == "redis":
         try:
-            raw = _redis_client().get(_redis_key(symbol))
+            raw = get_redis().get(_redis_key(symbol))
         except Exception:
             logger.warning("시세 캐시 조회 실패 (symbol=%s) — 시세 없음으로 처리", symbol)
             return None

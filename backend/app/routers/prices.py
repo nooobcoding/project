@@ -1,14 +1,18 @@
 """02-dashboard Boundary 계층 — /ws/prices.
 
-시세 캐시(services/price_stream.py)의 소비자일 뿐이다. 백엔드의 Upbit 구독 자체는
+시세 캐시(services/price_cache.py)의 소비자일 뿐이다. 백엔드의 Upbit 구독 자체는
 이 엔드포인트의 접속 여부와 무관하게 항상 유지된다 (00-overview.md 3장).
+
+틱이 같은 프로세스의 시세 스트림에서 오는지 다른 프로세스가 발행한 `ticks:{symbol}`에서
+오는지는 services/tick_bus.py가 감춘다 — 이 라우터는 몰라도 된다 (확장판 02-market-data.md
+6장).
 """
 
 import asyncio
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from app.services import price_cache, price_stream
+from app.services import price_cache, tick_bus
 
 router = APIRouter(tags=["prices"])
 
@@ -31,7 +35,7 @@ async def stream_prices(websocket: WebSocket) -> None:
         if cached is not None:
             await websocket.send_json(cached)
 
-    queue = await price_stream.register(websocket, symbols)
+    queue = await tick_bus.register(websocket, symbols)
     try:
         while True:
             receive_task = asyncio.ensure_future(websocket.receive_text())
@@ -48,4 +52,4 @@ async def stream_prices(websocket: WebSocket) -> None:
     except WebSocketDisconnect:
         pass
     finally:
-        price_stream.unregister(websocket)
+        tick_bus.unregister(websocket)
