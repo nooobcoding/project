@@ -12,6 +12,7 @@ from app.models.order import Order
 from app.models.strategy_slot import StrategySlot
 from app.models.user import User
 from app.models.watchlist import Watchlist
+from app.models.worker_heartbeat import WorkerHeartbeat
 
 __all__ = [
     "BacktestResult",
@@ -28,4 +29,5 @@ __all__ = [
     "StrategySlot",
     "User",
     "Watchlist",
+    "WorkerHeartbeat",
 ]
