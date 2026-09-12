@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import Balance, Coin, Holding, Order, Watchlist
-from app.services import price_stream
+from app.services import price_cache
 from app.services.candles import CoinNotFoundError as CandleCoinNotFoundError
 from app.services.candles import get_candles
 
@@ -42,7 +42,7 @@ def get_dashboard_summary(db: Session, user_id: int) -> dict[str, Decimal]:
     coin_valuation = Decimal(0)
     prev_valuation = Decimal(0)
     for holding in holdings:
-        cached = price_stream.get_cached_price(holding.coin_symbol)
+        cached = price_cache.get_cached_price(holding.coin_symbol)
         current_price = Decimal(str(cached["trade_price"])) if cached else holding.avg_buy_price
         coin_valuation += holding.quantity * current_price
 

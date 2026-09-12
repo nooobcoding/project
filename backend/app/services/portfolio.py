@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.constants import INITIAL_SEED_KRW
 from app.models import Balance, Coin, DepositWithdrawal, Holding, Order
-from app.services import price_stream
+from app.services import price_cache
 
 _PERIOD_MONTHS = {"1m": 1, "3m": 3, "6m": 6, "1y": 12}
 _KST = ZoneInfo("Asia/Seoul")
@@ -30,7 +30,7 @@ class InvalidPeriodError(Exception):
 
 
 def _current_price(holding: Holding) -> Decimal:
-    cached = price_stream.get_cached_price(holding.coin_symbol)
+    cached = price_cache.get_cached_price(holding.coin_symbol)
     if cached and "trade_price" in cached:
         return Decimal(str(cached["trade_price"]))
     return holding.avg_buy_price

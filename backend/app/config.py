@@ -3,7 +3,7 @@
 docs/00-overview.md 2장 기술 스택(PostgreSQL, JWT) 및 01-erd.md 전제 값들을 로드한다.
 """
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 from pydantic import field_validator
@@ -40,6 +40,15 @@ class Settings(BaseSettings):
         "worker",
         "scheduler",
     ]
+    # 확장판 02-market-data.md 5장 — 시세 캐시 백엔드. memory가 기본값이라 단일 프로세스
+    # 로컬 개발은 지금과 완전히 동일하게(Redis 없이) 동작한다.
+    price_cache_backend: Literal["memory", "redis"] = "memory"
+    redis_url: str = "redis://localhost:6379/0"
+    # 02-market-data.md 3.3절 — 이 값을 넘긴 시세는 "시세 없음"과 동일하게 취급한다
+    # (market-data 페일오버 공백 동안 낡은 가격으로 손절·시장가 체결이 나가는 것을 막는다).
+    # 초안값 30초 — 워커 tick(10초)보다는 커야 정상 상황에서 오탐이 안 나고, 손절이
+    # 늦어지면 안 되므로 너무 크면 안 된다. 확정값은 06-observability.md 실측 후 조정한다.
+    price_max_age_seconds: int = 30
 
     @field_validator("cors_allowed_origins", "process_roles", mode="before")
     @classmethod

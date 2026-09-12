@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.constants import TRADING_FEE_RATE
 from app.models import Balance, Coin, Holding, Order, StrategySlot
-from app.services import matcher, price_stream
+from app.services import matcher, price_cache
 
 
 class CoinNotFoundError(Exception):
@@ -130,12 +130,12 @@ def create_order(
 
     trigger_direction: str | None = None
     if order_type == "market":
-        cached = price_stream.get_cached_price(coin_symbol)
+        cached = price_cache.get_cached_price(coin_symbol)
         if cached is None:
             raise PriceUnavailableError()
         effective_price = Decimal(str(cached["trade_price"]))
     elif order_type == "reserved":
-        cached = price_stream.get_cached_price(coin_symbol)
+        cached = price_cache.get_cached_price(coin_symbol)
         if cached is None:
             raise PriceUnavailableError()
         current_price = Decimal(str(cached["trade_price"]))

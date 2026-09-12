@@ -8,7 +8,7 @@ import asyncio
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from app.services import price_stream
+from app.services import price_cache, price_stream
 
 router = APIRouter(tags=["prices"])
 
@@ -23,7 +23,7 @@ async def stream_prices(websocket: WebSocket) -> None:
     await websocket.accept()
 
     for symbol in symbols:
-        cached = price_stream.get_cached_price(symbol)
+        cached = price_cache.get_cached_price(symbol)
         if cached is not None:
             await websocket.send_json(cached)
 

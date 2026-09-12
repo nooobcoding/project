@@ -138,20 +138,19 @@ def make_slot(test_user, test_coin):
 def set_price(test_coin):
     """시세 캐시에 합성 코인의 현재가를 주입한다.
 
-    시장가 체결(services/orders.py)과 워커의 손절·익절 판정이 모두 이 프로세스 메모리 캐시를
-    읽으므로, 실제 Upbit 연결 없이 가격을 통제하려면 여기에 직접 넣는 것이 유일한 주입 지점이다
-    (07 계획 Step 2B "가짜 시세를 주입해 tick을 직접 호출").
+    시장가 체결(services/orders.py)과 워커의 손절·익절 판정이 모두 이 캐시를 읽으므로,
+    실제 Upbit 연결 없이 가격을 통제하려면 여기서 주입하는 것이 유일한 지점이다 (07 계획
+    Step 2B "가짜 시세를 주입해 tick을 직접 호출"). `price_cache.set_price`를 그대로 써서
+    received_at도 함께 찍는다 — 그래야 확장판 stale 방어(02-market-data.md 3.3절)에
+    걸리지 않는다.
     """
-    from app.services import price_stream
+    from app.services import price_cache
 
     def _set(price) -> None:
-        price_stream._price_cache[test_coin] = {
-            "symbol": test_coin,
-            "trade_price": float(price),
-        }
+        price_cache.set_price(test_coin, {"symbol": test_coin, "trade_price": float(price)})
 
     yield _set
-    price_stream._price_cache.pop(test_coin, None)
+    price_cache.delete_price(test_coin)
 
 
 def load_slot_state(slot_id: int) -> dict:

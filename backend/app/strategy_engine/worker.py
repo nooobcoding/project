@@ -35,7 +35,7 @@ from app.models import Coin, Notification, NotificationSetting, StrategySlot
 from app.services import candles as candles_service
 from app.services import heartbeat
 from app.services import notifications as notifications_service
-from app.services import price_stream, slot_state
+from app.services import price_cache, slot_state
 from app.services.orders import (
     InsufficientBalanceError,
     InsufficientHoldingError,
@@ -174,7 +174,7 @@ def _load_slot_snapshot(slot_id: int) -> _SlotSnapshot | None:
 
 
 def _current_price(coin_symbol: str) -> Decimal | None:
-    tick = price_stream.get_cached_price(coin_symbol)
+    tick = price_cache.get_cached_price(coin_symbol)
     if tick is None:
         return None
     return Decimal(str(tick["trade_price"]))

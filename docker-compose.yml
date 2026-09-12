@@ -15,15 +15,31 @@ services:
       timeout: 5s
       retries: 10
 
+  redis:
+    # 확장판 02-market-data.md 2장 — 시세 캐시(price:{symbol})·pending_symbols·토큰 버킷의
+    # 백엔드. PRICE_CACHE_BACKEND=memory가 기본값이라 지금 당장은 안 켜도 backend가 뜨지만,
+    # 4단계(market-data 분리)부터는 필수가 된다.
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   backend:
     build: ./backend
     environment:
       DATABASE_URL: postgresql+psycopg2://coin_autotrading:coin_autotrading@postgres:5432/coin_autotrading
       JWT_SECRET_KEY: dev-secret-change-me
+      REDIS_URL: redis://redis:6379/0
     ports:
       - "8000:8000"
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     volumes:
       - ./backend/app:/app/app
