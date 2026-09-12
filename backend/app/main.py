@@ -1,20 +1,24 @@
 """FastAPI 앱 진입점.
 
-헬스체크·인증(01-auth) 라우터와 coins 동기화 잡(00-overview.md 7장 로드맵 0번)
-기동 훅을 갖는다. 기능별 라우터는 routers/ 아래에 추가되는 대로 여기서
-include_router로 연결한다 (docs/02-coding-conventions.md 6장 프로젝트 구조 참고).
+헬스체크·인증(01-auth)·대시보드(02-dashboard) 라우터, coins 동기화 잡
+(00-overview.md 7장 로드맵 0번)과 시세 스트림(services/price_stream.py) 기동 훅을
+갖는다. 기능별 라우터는 routers/ 아래에 추가되는 대로 여기서 include_router로
+연결한다 (docs/02-coding-conventions.md 6장 프로젝트 구조 참고).
 """
 
+import asyncio
 import logging
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import auth
+from app.config import settings
+from app.routers import auth, candles, dashboard, prices
 from app.services.coin_sync import sync_coins
+from app.services.price_stream import run_price_stream
 
 logger = logging.getLogger(__name__)
 
@@ -31,26 +35,34 @@ def _run_coin_sync_job() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """기동 시 1회 동기화 후, 매일 04:00(KST) 동기화를 스케줄링한다."""
+    """기동 시 1회 coins 동기화 후 매일 04:00(KST) 동기화를 스케줄링하고,
+    시세 스트림(price_stream)을 상시 백그라운드 태스크로 시작한다."""
     _run_coin_sync_job()
     scheduler.add_job(_run_coin_sync_job, CronTrigger(hour=4, minute=0))
     scheduler.start()
+    price_stream_task = asyncio.create_task(run_price_stream())
     yield
+    price_stream_task.cancel()
+    with suppress(asyncio.CancelledError):
+        await price_stream_task
     scheduler.shutdown()
 
 
 app = FastAPI(title="코인 자동매매 프로그램 API", lifespan=lifespan)
 
-# 프론트엔드 Vite 개발 서버(기본 5173)에서의 요청 허용
+# 허용 origin은 배포 환경마다 다르므로 설정값(CORS_ALLOWED_ORIGINS)에서 가져온다 (app/config.py)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=settings.cors_allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 app.include_router(auth.router)
+app.include_router(dashboard.router)
+app.include_router(prices.router)
+app.include_router(candles.router)
 
 
 @app.get("/health")

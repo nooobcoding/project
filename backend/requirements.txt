@@ -1,15 +1,15 @@
-fastapi
-uvicorn[standard]
-sqlalchemy
-alembic
-psycopg2-binary
-pydantic-settings
-python-jose[cryptography]
-passlib[bcrypt]
-bcrypt<4.0  # passlib 1.7.4는 bcrypt>=4의 백엔드 감지와 호환되지 않음 (https://github.com/pyca/bcrypt/issues/684)
-apscheduler
-pandas
-numpy
-websockets
-httpx
-email-validator
+fastapi==0.141.1
+uvicorn[standard]==0.52.4
+sqlalchemy==2.0.52
+alembic==1.19.2
+psycopg2-binary==2.9.12
+pydantic-settings==2.15.0
+python-jose[cryptography]==3.5.0
+passlib[bcrypt]==1.7.4
+bcrypt==3.2.2  # passlib 1.7.4는 bcrypt>=4의 백엔드 감지와 호환되지 않음 (https://github.com/pyca/bcrypt/issues/684)
+apscheduler==3.11.3
+pandas==3.0.5
+numpy==2.5.3
+websockets==17.1
+httpx==0.28.1
+email-validator==2.3.0
