@@ -179,8 +179,12 @@ def _load_slot_snapshot(slot_id: int) -> _SlotSnapshot | None:
 
 
 def _current_price(coin_symbol: str) -> Decimal | None:
+    """현재가를 읽는다. 시세가 없으면(스트림 중단·Redis 장애 등) None이고, 그 자체가
+    "이번 tick에서 이 슬롯을 건너뛴다"는 뜻이라 여기서 한 번만 기록한다 — 호출부마다
+    따로 세면 같은 코드가 세 군데로 흩어진다."""
     tick = price_cache.get_cached_price(coin_symbol)
     if tick is None:
+        _record_skip()
         return None
     return Decimal(str(tick["trade_price"]))
 
@@ -210,7 +214,6 @@ def _try_exit(slot: _SlotSnapshot) -> bool:
 
     current_price = _current_price(slot.coin_symbol)
     if current_price is None:
-        _record_skip()
         return False
 
     intent = exits.decide_exit(_build_spec(slot), position, current_price)
@@ -298,7 +301,6 @@ def _try_dca(slot: _SlotSnapshot) -> None:
     """DCA의 매 tick 경로 — 정기 매수 시각이 됐거나 추가매수 조건이면 한 건 산다."""
     current_price = _current_price(slot.coin_symbol)
     if current_price is None:
-        _record_skip()
         return  # 시세를 모르면 판정 자체가 불가능하다. 상태를 건드리지 않고 다음 tick에 재시도.
 
     now = datetime.now(timezone.utc)
@@ -378,7 +380,6 @@ def _place_buy(slot: _SlotSnapshot, amount: Decimal) -> tuple[Decimal, Decimal] 
 
     current_price = _current_price(slot.coin_symbol)
     if current_price is None:
-        _record_skip()
         return None
 
     quantity = calc_buy_quantity(amount, current_price, TRADING_FEE_RATE)

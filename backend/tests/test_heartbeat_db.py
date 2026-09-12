@@ -7,7 +7,7 @@
 
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 
 from app.database import session_scope
 from app.models import WorkerHeartbeat
@@ -63,6 +63,17 @@ def test_record_tick_upserts_single_row():
             error_count=1,
             skip_count=2,
         )
+
+        with session_scope() as db:
+            row_count = db.scalar(
+                select(func.count())
+                .select_from(WorkerHeartbeat)
+                .where(
+                    WorkerHeartbeat.role == ROLE,
+                    WorkerHeartbeat.process_id == heartbeat._PROCESS_ID,
+                )
+            )
+        assert row_count == 1  # 프로세스가 tick을 돌 때마다 행이 쌓이면 관측 자체가 무의미해진다
 
         row = _row()
         assert row.last_duration_ms == 800

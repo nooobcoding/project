@@ -33,7 +33,7 @@ from app.routers import (
     strategy_slots,
     wallet,
 )
-from app.services import tick_bus
+from app.services import price_cache, tick_bus
 from app.services.coin_sync import sync_coins
 from app.services.price_stream import run_market_data
 from app.strategy_engine.worker import TICK_INTERVAL_SECONDS, run_tick
@@ -68,15 +68,8 @@ async def lifespan(app: FastAPI):
     """
     roles = settings.process_roles
 
-    if "market-data" not in roles and settings.price_cache_backend == "memory":
-        # memory 캐시는 프로세스 안에만 있다 — 이 프로세스에는 시세를 쓰는 주체가 없으므로
-        # 모든 시세 조회가 영영 "시세 없음"이 된다. 역할을 나눴으면 redis로 가야 한다.
-        # 조용히 실패하면 "주문이 자꾸 거부된다"로만 보이므로 기동 시점에 못 박아둔다
-        # (06-observability.md 5장 조용한 실패 금지).
-        logger.warning(
-            "PROCESS_ROLES에 market-data가 없는데 PRICE_CACHE_BACKEND=memory다 — "
-            "이 프로세스는 시세를 전혀 못 읽는다. 역할을 나눴다면 PRICE_CACHE_BACKEND=redis로 설정할 것."
-        )
+    if "market-data" not in roles:
+        price_cache.warn_if_unfed("PROCESS_ROLES에 market-data가 없다")
 
     if "scheduler" in roles:
         _run_coin_sync_job()

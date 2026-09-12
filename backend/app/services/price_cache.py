@@ -39,8 +39,30 @@ _memory_cache: dict[str, dict] = {}
 _memory_last_tick_at = 0.0
 
 
+_warned_unfed = False
+
+
 def _redis_key(symbol: str) -> str:
     return f"price:{symbol}"
+
+
+def warn_if_unfed(reason: str) -> None:
+    """이 프로세스의 시세 캐시를 아무도 채우지 않는 상태면 경고한다 (한 번만).
+
+    memory 캐시는 프로세스 안에만 있으므로, 시세를 쓰는 주체가 이 프로세스 안에 없으면
+    모든 조회가 영영 "시세 없음"이 된다. 조용히 두면 "주문이 자꾸 거부된다"로만 보여
+    원인을 찾기 어렵다 (06-observability.md 5장 조용한 실패 금지).
+    """
+    global _warned_unfed
+
+    if _warned_unfed or settings.price_cache_backend != "memory":
+        return
+    logger.warning(
+        "%s인데 PRICE_CACHE_BACKEND=memory다 — 이 프로세스는 시세를 전혀 못 읽는다. "
+        "프로세스를 나눠 띄웠다면 PRICE_CACHE_BACKEND=redis로 설정할 것.",
+        reason,
+    )
+    _warned_unfed = True
 
 
 def _is_feed_stale(last_tick_at: float) -> bool:
@@ -108,27 +130,27 @@ def get_cached_prices(symbols: Iterable[str]) -> dict[str, dict]:
             logger.warning("시세 캐시 조회 실패 (%d개) — 시세 없음으로 처리", len(symbol_list))
             return {}
         last_tick_at = _parse_float(values[-1])
-        raw_payloads = dict(zip(symbol_list, values[:-1]))
+        payloads = {
+            symbol: _parse_payload(raw) for symbol, raw in zip(symbol_list, values[:-1])
+        }
     else:
         last_tick_at = _memory_last_tick_at
-        raw_payloads = {symbol: _memory_cache.get(symbol) for symbol in symbol_list}
+        payloads = {
+            symbol: _memory_cache[symbol] for symbol in symbol_list if symbol in _memory_cache
+        }
 
     if _is_feed_stale(last_tick_at):
         # 스트림이 멈췄다 — 남아 있는 값은 전부 낡은 값이다 (market-data 페일오버 중이거나
         # 죽었다). 낡은 가격으로 자금을 움직이는 것보다 멈추는 편이 낫다.
         return {}
 
-    return {
-        symbol: payload
-        for symbol, payload in ((s, _parse_payload(raw_payloads[s])) for s in symbol_list)
-        if payload is not None
-    }
+    return {symbol: payload for symbol, payload in payloads.items() if payload is not None}
 
 
-def _parse_payload(raw) -> dict | None:
-    """Redis 문자열(또는 memory 백엔드의 dict)을 틱으로 되돌린다. 깨져 있으면 None."""
-    if raw is None or isinstance(raw, dict):
-        return raw
+def _parse_payload(raw: str | None) -> dict | None:
+    """Redis에 담긴 JSON 문자열을 틱으로 되돌린다. 없거나 깨져 있으면 None."""
+    if raw is None:
+        return None
     try:
         return json.loads(raw)
     except (TypeError, ValueError):

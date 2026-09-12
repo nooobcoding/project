@@ -38,13 +38,15 @@ def get_engine():
     return engine
 
 
-def take_peak_checked_out() -> int:
-    """직전 호출 이후 커넥션 풀 체크아웃 최대치를 읽고 리셋한다 (heartbeat tick 단위 관측용)."""
-    global _pool_peak_checked_out
+def peak_checked_out() -> int:
+    """이 프로세스가 기동 이래 동시에 쥐었던 커넥션 수의 최대치 (00-architecture.md 3.5절).
+
+    **읽어도 리셋하지 않는다.** 풀은 역할이 아니라 프로세스 단위라 이 값의 주인도 프로세스다.
+    읽을 때 리셋하면 heartbeat를 남기는 역할이 둘 이상이 되는 순간(5단계 matcher) 먼저 부른
+    쪽이 값을 가져가고 나머지는 0을 보고하게 된다 — 그것도 아무 표시 없이.
+    """
     with _pool_peak_lock:
-        peak = _pool_peak_checked_out
-        _pool_peak_checked_out = 0
-        return peak
+        return _pool_peak_checked_out
 
 
 def get_session() -> Session:

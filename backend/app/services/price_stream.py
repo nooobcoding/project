@@ -28,7 +28,6 @@ from typing import Iterable
 import websockets
 from sqlalchemy import select
 
-from app.config import settings
 from app.database import session_scope
 from app.models import Coin
 from app.services import leader, matcher, price_cache, tick_bus
@@ -136,21 +135,12 @@ async def run_market_data() -> None:
     (02-market-data.md 3.3절 — 낡은 가격으로 손절·시장가 체결이 나가는 것보다 멈추는 게 낫다).
     """
     lock = leader.LeaderLock("market-data")
-    warned_about_memory_backend = False
     while True:
         if not await asyncio.to_thread(lock.try_acquire):
-            if not warned_about_memory_backend and settings.price_cache_backend == "memory":
-                # memory 캐시는 프로세스 안에만 있다 — 리더가 아닌 이 프로세스의 캐시는
-                # 아무도 채우지 않으므로 영영 빈 채로 남는다. 같은 호스트에 프로세스를 둘
-                # 이상 띄웠다는 뜻이므로 redis로 가야 한다 (06-observability.md 5장).
-                logger.warning(
-                    "market-data 리더가 아닌데 PRICE_CACHE_BACKEND=memory다 — 이 프로세스는 "
-                    "시세를 전혀 못 읽는다. 프로세스를 둘 이상 띄웠다면 PRICE_CACHE_BACKEND=redis로 설정할 것."
-                )
-                warned_about_memory_backend = True
+            # 리더가 아니면 이 프로세스의 memory 캐시는 아무도 안 채운다.
+            price_cache.warn_if_unfed("market-data 리더가 아니다")
             await asyncio.sleep(LEADER_RETRY_INTERVAL_SECONDS)
             continue
-        warned_about_memory_backend = False
 
         logger.info("market-data 리더로 선출됐다 — Upbit 시세 스트림을 시작한다")
         stream_task = asyncio.create_task(run_price_stream())

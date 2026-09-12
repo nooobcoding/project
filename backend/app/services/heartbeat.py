@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import select
 
-from app.database import session_scope, take_peak_checked_out
+from app.database import peak_checked_out, session_scope
 from app.models import WorkerHeartbeat
 
 logger = logging.getLogger(__name__)
@@ -38,8 +38,6 @@ def record_tick(
             "%s tick 예산 초과: %dms > %dms (item_count=%d)", role, duration_ms, budget_ms, item_count
         )
 
-    db_connections = take_peak_checked_out()
-
     with session_scope() as db:
         shard_filter = (
             WorkerHeartbeat.shard_id.is_(None) if shard_id is None else WorkerHeartbeat.shard_id == shard_id
@@ -52,15 +50,25 @@ def record_tick(
             )
         )
         if row is None:
-            row = WorkerHeartbeat(role=role, shard_id=shard_id, process_id=_PROCESS_ID)
+            # 누적 컬럼은 여기서 0으로 시작시킨다 — 모델의 default=0은 flush 시점에야
+            # 적용돼서, 방금 만든 객체는 아직 None이다.
+            row = WorkerHeartbeat(
+                role=role,
+                shard_id=shard_id,
+                process_id=_PROCESS_ID,
+                max_duration_ms=0,
+                over_budget_count=0,
+                error_count=0,
+                skip_count=0,
+            )
             db.add(row)
 
         row.last_tick_at = started_at
         row.last_duration_ms = duration_ms
-        row.max_duration_ms = max(row.max_duration_ms or 0, duration_ms)
-        row.over_budget_count = (row.over_budget_count or 0) + (1 if over_budget else 0)
+        row.max_duration_ms = max(row.max_duration_ms, duration_ms)
+        row.over_budget_count += 1 if over_budget else 0
         row.item_count = item_count
-        row.db_connections = db_connections
-        row.error_count = (row.error_count or 0) + error_count
-        row.skip_count = (row.skip_count or 0) + skip_count
+        row.db_connections = peak_checked_out()
+        row.error_count += error_count
+        row.skip_count += skip_count
         row.updated_at = datetime.now(timezone.utc)
