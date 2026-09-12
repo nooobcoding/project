@@ -1882,6 +1882,26 @@ body {
   flex-shrink: 0;
 }
 
+.backtest-result-delete-confirm {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  font-size: 0.875rem;
+  cursor: default;
+}
+
+.backtest-result-delete-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.backtest-result-delete-actions .settings-danger-button {
+  padding: 6px 12px;
+}
+
 /* 수익률 색은 기존 .is-positive/.is-negative(상승 빨강/하락 녹색, 02-dashboard.md 관례)를 그대로 쓴다. */
 
 /* 08-portfolio.md — 좌측이 넓은 2컬럼(.wallet-grid의 340px 1fr과 반대 비율). 요약 카드는

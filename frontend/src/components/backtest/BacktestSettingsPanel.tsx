@@ -18,6 +18,8 @@ import {
   INTERVAL_LABEL,
   MAX_RANGE_DAYS,
   STRATEGY_TYPE_LABEL,
+  addDays,
+  earlierDate,
   exceedsRangeLimit,
   rangeLimitErrorText,
   subtractDays,
@@ -157,6 +159,13 @@ export function BacktestSettingsPanel({
       : null;
   const dateError = dateRangeError ?? rangeLimitError;
 
+  // 봉단위별 최대 조회 기간(MAX_RANGE_DAYS)을 벗어나는 날짜는 달력에서 아예 고를 수 없게
+  // <input type="date">의 min/max로 막는다 — dateError 문구는 그 방어를 뚫는 경우(예:
+  // 이 기간을 골라둔 채로 봉단위를 더 좁은 쪽으로 바꾼 직후, 위 useEffect가 보정하기 전 한
+  // 프레임)를 위한 안전망으로 남긴다.
+  const startDateMin = subtractDays(endDate, MAX_RANGE_DAYS[interval] - 1);
+  const endDateMax = earlierDate(todayDateInput(), addDays(startDate, MAX_RANGE_DAYS[interval] - 1));
+
   const isRunDisabled =
     isRunning ||
     !coinSymbol ||
@@ -264,6 +273,7 @@ export function BacktestSettingsPanel({
               type="date"
               className="wallet-date-input"
               value={startDate}
+              min={startDateMin}
               max={endDate}
               onChange={(event) => setStartDate(event.target.value)}
             />
@@ -273,7 +283,7 @@ export function BacktestSettingsPanel({
               className="wallet-date-input"
               value={endDate}
               min={startDate}
-              max={todayDateInput()}
+              max={endDateMax}
               onChange={(event) => setEndDate(event.target.value)}
             />
           </div>

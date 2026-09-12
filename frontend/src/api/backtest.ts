@@ -35,3 +35,7 @@ export function getBacktestResults(token: string): Promise<BacktestResultSummary
 export function getBacktestResult(token: string, id: number): Promise<BacktestResultDetail> {
   return apiFetch<BacktestResultDetail>(`/api/backtest/results/${id}`, { token });
 }
+
+export function deleteBacktestResult(token: string, id: number): Promise<void> {
+  return apiFetch<void>(`/api/backtest/results/${id}`, { method: "DELETE", token });
+}

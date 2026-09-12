@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { getBacktestResult, runBacktest, saveBacktestResult } from "../api/backtest";
+import { deleteBacktestResult, getBacktestResult, runBacktest, saveBacktestResult } from "../api/backtest";
 import { ApiError } from "../api/client";
 import { BacktestLoadModal } from "../components/backtest/BacktestLoadModal";
 import { BacktestResultPanel } from "../components/backtest/BacktestResultPanel";
@@ -75,6 +75,18 @@ export function BacktestPage() {
     setIsLoadModalOpen(false);
   };
 
+  const handleDeleteResult = async (id: number) => {
+    if (!token) return;
+    await deleteBacktestResult(token, id);
+    await refreshResults();
+    // 지금 화면에 띄워둔 결과가 방금 지운 것이었다면, 존재하지 않는 결과를 계속 보여주지
+    // 않도록 설정 패널을 새 상태(기본값)로 되돌린다.
+    if (loadedConfig?.id === id) {
+      setLoadedConfig(null);
+      setRunResult(null);
+    }
+  };
+
   return (
     <div className="dashboard-page">
       <div className="backtest-grid">
@@ -108,6 +120,7 @@ export function BacktestPage() {
           results={results}
           isLoading={isResultsLoading}
           onSelect={handleLoadResult}
+          onDelete={handleDeleteResult}
           onClose={() => setIsLoadModalOpen(false)}
         />
       )}

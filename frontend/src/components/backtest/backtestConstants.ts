@@ -73,6 +73,19 @@ export function subtractDays(base: string, days: number): string {
   return date.toISOString().slice(0, 10);
 }
 
+/** `base`에 `days`일을 더한 날짜(YYYY-MM-DD). 종료일 <input> 상한 계산에 쓴다. */
+export function addDays(base: string, days: number): string {
+  const date = toDateOnly(base);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+/** 두 날짜(YYYY-MM-DD) 중 이르지 않은(=더 작은) 쪽. YYYY-MM-DD는 사전식 비교가 그대로
+ * 시간순 비교와 같아서 문자열 비교로 충분하다. */
+export function earlierDate(a: string, b: string): string {
+  return a < b ? a : b;
+}
+
 /** 저장된 결과를 불러올 때 NUMERIC 컬럼의 뒤따르는 0을 없앤다 (예: "10000000.0000" → "10000000",
  * "0.050" → "0.05"). 실행에 새로 쓴 값과 표시를 맞추기 위함이며 계산에는 영향이 없다. */
 export function trimTrailingZeros(value: string): string {

@@ -288,8 +288,26 @@ def test_deleting_a_result_cascades_to_its_trades(test_user, test_coin):
 
     with session_scope() as db:
         assert db.query(BacktestTrade).filter_by(backtest_result_id=result_id).count() == 2
-        db.delete(db.get(BacktestResult, result_id))
+        backtest_service.delete_result(db, test_user, result_id)
 
     with session_scope() as db:
         assert db.get(BacktestResult, result_id) is None
         assert db.query(BacktestTrade).filter_by(backtest_result_id=result_id).count() == 0
+
+
+def test_deleting_another_users_result_is_not_found(test_user, test_coin):
+    """get_result_detail과 같은 규칙 — 남의 결과는 지울 수 없고, 있는지조차 알려주지 않는다."""
+    result_id = _save(test_user)
+
+    with session_scope() as db:
+        with pytest.raises(backtest_service.BacktestResultNotFoundError):
+            backtest_service.delete_result(db, test_user + 999999, result_id)
+
+    with session_scope() as db:
+        assert db.get(BacktestResult, result_id) is not None
+
+
+def test_deleting_a_missing_result_is_not_found(test_user, test_coin):
+    with session_scope() as db:
+        with pytest.raises(backtest_service.BacktestResultNotFoundError):
+            backtest_service.delete_result(db, test_user, 999999999)

@@ -27,6 +27,7 @@ from app.services.backtest import (
     BacktestTimeoutError,
     InvalidDateRangeError,
     NoCandleDataError,
+    delete_result,
     execute_backtest,
     get_result_detail,
     list_results,
@@ -260,6 +261,20 @@ def get_backtest_result(
             status_code=http_status.HTTP_404_NOT_FOUND, detail="존재하지 않는 백테스트 결과입니다."
         )
     return _detail_response(result, trades)
+
+
+@router.delete("/results/{result_id}", status_code=http_status.HTTP_204_NO_CONTENT)
+def delete_backtest_result(
+    result_id: int,
+    db: Session = Depends(get_session),
+    current_user=Depends(get_current_user),
+) -> None:
+    try:
+        delete_result(db, current_user.id, result_id)
+    except BacktestResultNotFoundError:
+        raise HTTPException(
+            status_code=http_status.HTTP_404_NOT_FOUND, detail="존재하지 않는 백테스트 결과입니다."
+        )
 
 
 def _detail_response(

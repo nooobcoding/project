@@ -233,3 +233,17 @@ def get_result_detail(
         )
     )
     return result, trades
+
+
+def delete_result(db: Session, user_id: int, result_id: int) -> None:
+    """저장된 결과 1건을 삭제한다. 남의 결과는 없는 것과 똑같이 취급한다(get_result_detail과 동일).
+
+    `backtest_trades.backtest_result_id`가 `ON DELETE CASCADE`라(01-erd.md) 체결 목록은
+    DB가 함께 지운다 — 여기서 따로 지울 필요가 없다.
+    """
+    result = db.get(BacktestResultRow, result_id)
+    if result is None or result.user_id != user_id:
+        raise BacktestResultNotFoundError()
+
+    db.delete(result)
+    db.commit()
