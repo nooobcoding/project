@@ -65,6 +65,13 @@ export function OrderFormPanel({
       const budget = (availableKrw * ratio) / 100;
       const qty = budget / (effectivePrice * (1 + TRADING_FEE_RATE));
       setQuantity(String(Math.max(truncate(qty, 8), 0)));
+    } else if (ratio === 100) {
+      // "최대"는 계산이 아니라 보유량 그대로다. (availableQuantity * 100) / 100처럼 항등식도
+      // 부동소수점을 거치면 오차가 생겨(예: 12370.05259746 → 12370.052597459999...)
+      // truncate()가 마지막 1단위(0.00000001)를 잘라낸 채 "전량 매도"가 나가고, 정작
+      // holdings에는 그만큼 팔 수 없는 먼지가 남는다. 백엔드가 이미 정확한 문자열로 준
+      // available_quantity를 그대로 쓴다.
+      setQuantity(availableBalance?.available_quantity ?? "");
     } else {
       const qty = (availableQuantity * ratio) / 100;
       setQuantity(String(Math.max(truncate(qty, 8), 0)));
