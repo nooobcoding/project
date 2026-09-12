@@ -1,7 +1,7 @@
 // 공용 fetch 래퍼. 서버 통신 실패와 서버가 반환한 오류를 구분해 각기 다른 메시지를 던진다
 // (docs/features/01-auth.md 4장 오류 처리 표 참고).
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
+export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
 
 const NETWORK_ERROR_MESSAGE = "서버와 연결할 수 없습니다. 잠시 후 다시 시도해주세요.";
 
@@ -45,7 +45,9 @@ export async function apiFetch<T>(path: string, options: ApiFetchOptions = {}): 
   return (await response.json()) as T;
 }
 
-async function extractErrorDetail(response: Response): Promise<string> {
+// CSV 내보내기(api/portfolio.ts)처럼 apiFetch를 쓸 수 없는 raw fetch 응답에도 같은 오류
+// 추출 로직을 재사용한다 — 서버가 JSON 오류를 던지는 방식은 응답 Content-Type과 무관하다.
+export async function extractErrorDetail(response: Response): Promise<string> {
   try {
     const body = await response.json();
     if (typeof body.detail === "string") {

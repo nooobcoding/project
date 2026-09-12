@@ -31,5 +31,6 @@ class OrderResponse(BaseModel):
     fee: str
     trigger_price: str | None
     trigger_direction: str | None
+    strategy_slot_id: int | None
     created_at: datetime
     filled_at: datetime | None

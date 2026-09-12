@@ -10,6 +10,7 @@ from app.database import get_session
 from app.schemas.orders import OrderCreateRequest, OrderResponse
 from app.services.auth import get_current_user
 from app.services.orders import (
+    CoinLockedByAutoTradingError,
     CoinNotFoundError,
     InsufficientBalanceError,
     InsufficientHoldingError,
@@ -40,6 +41,7 @@ def _to_response(order) -> OrderResponse:
         fee=str(order.fee),
         trigger_price=str(order.trigger_price) if order.trigger_price is not None else None,
         trigger_direction=order.trigger_direction,
+        strategy_slot_id=order.strategy_slot_id,
         created_at=order.created_at,
         filled_at=order.filled_at,
     )
@@ -90,6 +92,11 @@ def post_order(
             status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="주문 처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.",
         )
+    except CoinLockedByAutoTradingError:
+        raise HTTPException(
+            status_code=http_status.HTTP_409_CONFLICT,
+            detail="자동매매가 실행 중인 코인입니다. 자동매매를 먼저 종료해주세요.",
+        )
     return _to_response(order)
 
 
@@ -113,6 +120,8 @@ def delete_order(
 def get_orders(
     status: str = Query("pending"),
     coin_symbol: str | None = Query(None),
+    source: str | None = Query(None),
+    strategy_slot_id: int | None = Query(None),
     db: Session = Depends(get_session),
     current_user=Depends(get_current_user),
 ) -> list[OrderResponse]:
@@ -120,7 +129,13 @@ def get_orders(
         orders = list_pending_orders(db, current_user.id)
     elif status == "history":
         symbol = coin_symbol.upper() if coin_symbol else None
-        orders = list_order_history(db, current_user.id, coin_symbol=symbol)
+        orders = list_order_history(
+            db,
+            current_user.id,
+            coin_symbol=symbol,
+            source=source,
+            strategy_slot_id=strategy_slot_id,
+        )
     else:
         raise HTTPException(
             status_code=http_status.HTTP_400_BAD_REQUEST, detail="지원하지 않는 status 값입니다."

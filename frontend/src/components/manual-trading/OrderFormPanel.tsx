@@ -17,6 +17,8 @@ interface OrderFormPanelProps {
   onPriceChange: (price: string) => void;
   onSubmit: (input: OrderCreateInput) => Promise<void>;
   onSuccess: () => void;
+  // 07-auto-trading.md 5장 FR-M10 — 활성 자동매매 슬롯이 있는 코인이면 true.
+  isLocked?: boolean;
 }
 
 function truncate(value: number, decimals: number): number {
@@ -35,6 +37,7 @@ export function OrderFormPanel({
   onPriceChange,
   onSubmit,
   onSuccess,
+  isLocked,
 }: OrderFormPanelProps) {
   const [side, setSide] = useState<OrderSide>("buy");
   const [orderType, setOrderType] = useState<OrderType>("limit");
@@ -76,6 +79,16 @@ export function OrderFormPanel({
     (orderType === "reserved" && Number(triggerPrice || "0") <= 0) ||
     (side === "buy" && orderAmount * (1 + TRADING_FEE_RATE) > availableKrw) ||
     (side === "sell" && parsedQuantity > availableQuantity);
+
+  if (isLocked) {
+    return (
+      <div className="dashboard-card trade-order-bar">
+        <p className="auto-locked-notice">
+          자동매매가 실행 중인 코인입니다. 자동매매를 먼저 종료해주세요.
+        </p>
+      </div>
+    );
+  }
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();

@@ -11,7 +11,7 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.constants import TRADING_FEE_RATE
-from app.models import Balance, Coin, Holding, Order
+from app.models import Balance, Coin, Holding, Order, StrategySlot
 from app.services import matcher, price_stream
 
 
@@ -45,6 +45,10 @@ class OrderNotFoundError(Exception):
 
 class OrderNotCancelableError(Exception):
     """이미 체결·취소된 주문을 취소하려는 경우 (동시 체결과 경쟁해 패배한 경우 포함)."""
+
+
+class CoinLockedByAutoTradingError(Exception):
+    """해당 코인에 활성 자동매매 슬롯이 있어 수동 주문이 잠긴 경우 (07-auto-trading.md 5장 FR-M10)."""
 
 
 def get_available_krw(db: Session, user_id: int) -> Decimal:
@@ -81,6 +85,16 @@ def get_available_quantity(db: Session, user_id: int, coin_symbol: str) -> Decim
     return quantity - locked
 
 
+def _active_slot_for_coin(db: Session, user_id: int, coin_symbol: str) -> StrategySlot | None:
+    return db.scalar(
+        select(StrategySlot).where(
+            StrategySlot.user_id == user_id,
+            StrategySlot.coin_symbol == coin_symbol,
+            StrategySlot.is_active,
+        )
+    )
+
+
 def create_order(
     db: Session,
     user_id: int,
@@ -91,6 +105,7 @@ def create_order(
     price: Decimal | None = None,
     trigger_price: Decimal | None = None,
     source: str = "manual",
+    strategy_slot_id: int | None = None,
 ) -> Order:
     """주문을 생성한다. 시장가는 같은 트랜잭션 안에서 즉시 체결까지 수행한다
     (09-execution-engine.md 1장 — 시장가는 매칭 큐를 거치지 않는다).
@@ -98,10 +113,11 @@ def create_order(
     예약가(order_type='reserved')는 감시가격(trigger_price) 도달 시 order_type이
     'limit'으로 승격될 뿐, 자체 체결 경로는 갖지 않는다 (services/matcher.py 참고).
 
-    source는 기본값 "manual"만 지금 쓰이지만(03-manual-trading), 07-auto-trading이
-    이 함수를 내부 호출로 재사용할 때 "auto"를 넘길 수 있도록 파라미터로 열어둔다.
-    (strategy_slot_id는 아직 컬럼 자체가 없어 — strategy_slots 테이블 부재, 01-erd.md
-    orders.strategy_slot_id 각주 참고 — 07에서 컬럼과 함께 추가한다.)
+    source="auto"·strategy_slot_id는 07-auto-trading 워커가 이 함수를 내부 호출로 재사용할
+    때 넘긴다 (03-manual-trading.md 1장). source="manual"일 때는 해당 코인에 활성 자동매매
+    슬롯이 있으면 거부한다 — 자동매매가 그 코인의 포지션을 관리하는 도중 수동 주문이 끼어들면
+    슬롯의 state.position과 실제 holdings가 어긋날 수 있기 때문이다(07-auto-trading.md 5장
+    FR-M10). 미체결 주문 취소(cancel_order)는 이 잠금과 무관하게 항상 허용한다.
     """
     coin = db.get(Coin, coin_symbol)
     if coin is None or not coin.is_active:
@@ -135,23 +151,32 @@ def create_order(
     else:
         effective_price = price
 
-    if side == "buy":
-        # 가용잔고 조회(get_available_krw)와 주문 insert 사이에 틈이 있으면, 동시에 들어온
-        # 두 주문이 서로 상대방의 동결분을 못 본 채(stale read) 둘 다 통과해 잔고를 초과할
-        # 수 있다. balances 행을 잠가(FOR UPDATE) 같은 유저의 동시 매수 검증을 직렬화한다 —
-        # 체결 쪽은 이미 fill_order의 조건부 UPDATE로 안전하지만, 이 생성 단계는 그렇지
-        # 않았다. 잠금은 이 트랜잭션이 커밋/롤백될 때(바로 아래 db.commit()) 풀린다.
-        db.execute(select(Balance).where(Balance.user_id == user_id).with_for_update())
-        required = effective_price * quantity * (1 + TRADING_FEE_RATE)
-        if required > get_available_krw(db, user_id):
-            raise InsufficientBalanceError()
-    else:
-        # 매도도 동일한 이유로 holdings 행을 잠가 동시 매도 검증을 직렬화한다.
+    # 매수·매도 모두 balances 행을 가장 먼저 잠근다. 두 가지를 한꺼번에 지키기 위해서다.
+    #   1) 검증과 주문 insert 사이의 틈: 동시에 들어온 두 주문이 서로 상대방의 동결분을 못 본
+    #      채(stale read) 둘 다 통과해 잔고/보유수량을 초과하는 것을 막는다.
+    #   2) FR-M10(활성 슬롯 코인의 수동 주문 잠금) 체크의 TOCTOU: `toggle_slot`(ON)도 같은
+    #      balances 행을 잠그므로, 체크를 이 잠금 "뒤"에 두어야 슬롯이 막 활성화된 순간의 코인이
+    #      수동 주문으로 새어나가지 않는다.
+    # 잠금 순서는 balances → holdings로 고정한다 — 체결(`matcher.fill_order`)도 같은 방향이라
+    # 교착이 생기지 않는다. 잠금은 이 트랜잭션이 커밋/롤백될 때 풀리며, 시장가는 아래에서 체결까지
+    # 같은 트랜잭션으로 이어가므로 검증부터 체결까지 잠금이 끊기지 않는다.
+    db.execute(select(Balance).where(Balance.user_id == user_id).with_for_update())
+
+    if side == "sell":
         db.execute(
             select(Holding)
             .where(Holding.user_id == user_id, Holding.coin_symbol == coin_symbol)
             .with_for_update()
         )
+
+    if source == "manual" and _active_slot_for_coin(db, user_id, coin_symbol) is not None:
+        raise CoinLockedByAutoTradingError()
+
+    if side == "buy":
+        required = effective_price * quantity * (1 + TRADING_FEE_RATE)
+        if required > get_available_krw(db, user_id):
+            raise InsufficientBalanceError()
+    else:
         if quantity > get_available_quantity(db, user_id, coin_symbol):
             raise InsufficientHoldingError(coin.korean_name)
 
@@ -167,16 +192,22 @@ def create_order(
         fee=Decimal(0),
         trigger_price=trigger_price if order_type == "reserved" else None,
         trigger_direction=trigger_direction,
+        strategy_slot_id=strategy_slot_id,
         created_at=datetime.now(timezone.utc),
     )
     db.add(order)
-    db.commit()
-    db.refresh(order)
 
     if order_type == "market":
+        # 주문 행과 체결을 한 트랜잭션에서 확정한다. 주문을 먼저 커밋하고 체결하면, 체결이
+        # 실패했을 때(교착·DB 장애 등) pending 시장가 주문이 남는다 — 매칭 엔진은 지정가만
+        # 훑으므로(`matcher.run_matching_for_symbol`) 그 주문은 어떤 경로로도 체결되지 않고
+        # 가용 원화만 영구히 동결한다. flush로 id만 확보하고 커밋은 fill_order에 맡긴다.
+        db.flush()
         matcher.fill_order(db, order, fill_price=effective_price)
-        db.refresh(order)
+    else:
+        db.commit()
 
+    db.refresh(order)
     return order
 
 
@@ -208,12 +239,25 @@ def list_pending_orders(db: Session, user_id: int) -> list[Order]:
 
 
 def list_order_history(
-    db: Session, user_id: int, coin_symbol: str | None = None, limit: int = 50
+    db: Session,
+    user_id: int,
+    coin_symbol: str | None = None,
+    source: str | None = None,
+    strategy_slot_id: int | None = None,
+    limit: int = 50,
 ) -> list[Order]:
-    """체결·취소된 최근 주문 목록 (거래내역 탭)."""
+    """체결·취소된 최근 주문 목록 (거래내역 탭, 07-auto-trading.md 3-B 자동매매 체결 내역).
+
+    source="auto"로 필터하면 07-auto-trading 체결 내역이, strategy_slot_id를 더하면
+    슬롯 단위 필터가 된다 (07-auto-trading.md 3-B "슬롯별 필터 가능").
+    """
     conditions = [Order.user_id == user_id, Order.status.in_(["filled", "canceled"])]
     if coin_symbol is not None:
         conditions.append(Order.coin_symbol == coin_symbol)
+    if source is not None:
+        conditions.append(Order.source == source)
+    if strategy_slot_id is not None:
+        conditions.append(Order.strategy_slot_id == strategy_slot_id)
     return list(
         db.scalars(
             select(Order).where(*conditions).order_by(Order.created_at.desc()).limit(limit)

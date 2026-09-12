@@ -225,7 +225,7 @@ erDiagram
 | quantity | NUMERIC(28,8) | NOT NULL | |
 | status | VARCHAR(8) | CHECK IN ('pending','filled','canceled') | |
 | source | VARCHAR(6) | CHECK IN ('manual','auto') | |
-| strategy_slot_id | BIGINT | FK → strategy_slots.id, NULL 허용 | auto 체결일 때만 값 존재. **(03 구현 시 실제 DB엔 이 컬럼을 아직 추가하지 않음** — `strategy_slots` 테이블이 없어 FK 대상이 없으므로. 07 구현 시 컬럼·FK·인덱스를 함께 추가한다. 그 전까지 이 표는 목표 스키마이며 실제 `orders` 테이블과 다르다) |
+| strategy_slot_id | BIGINT | FK → strategy_slots.id **ON DELETE SET NULL**, NULL 허용 | auto 체결일 때만 값 존재. 슬롯이 삭제되면 연결만 끊고 체결 기록은 남긴다 — 주문은 잔고 이력의 근거이자 `08-portfolio` 거래내역이라 슬롯과 함께 지울 수 없다. (07 구현 중 이 FK를 RESTRICT로 두면 한 번이라도 거래한 슬롯을 삭제할 수 없어 `DELETE /api/strategy-slots/{id}`가 실패하는 것을 발견해 SET NULL로 확정) |
 | realized_profit | NUMERIC(20,4) | NULL 허용 | (신규) `side='sell'`이 체결될 때, 체결 직전 `holdings.avg_buy_price` 기준 실현손익을 계산해 기록. 매수 행과 미체결 행은 NULL |
 | fee | NUMERIC(20,4) | NOT NULL DEFAULT 0 | (신규) 체결 수수료(원화). pending 동안 0, 체결 시 확정. 계산 규칙은 3.2절 |
 | trigger_price | NUMERIC(20,8) | NULL 허용 | (신규) 예약가 주문의 감시가격. `order_type='reserved'`가 아니면 항상 NULL |
@@ -284,7 +284,7 @@ erDiagram
 | type | VARCHAR(8) | CHECK IN ('signal','exit','error') | |
 | message | TEXT | NOT NULL | |
 | coin_symbol | VARCHAR(10) | FK → coins.symbol, NULL 허용 | |
-| strategy_slot_id | BIGINT | FK → strategy_slots.id, NULL 허용 | (신규) 어느 슬롯이 발생시켰는지 추적용 |
+| strategy_slot_id | BIGINT | FK → strategy_slots.id **ON DELETE SET NULL**, NULL 허용 | (신규) 어느 슬롯이 발생시켰는지 추적용. `orders.strategy_slot_id`와 같은 이유로 슬롯 삭제 시 연결만 끊는다 |
 | is_read | BOOLEAN | NOT NULL DEFAULT false | GNB 배지 카운트 소스 |
 | created_at | TIMESTAMPTZ | NOT NULL | |
 
@@ -309,7 +309,7 @@ erDiagram
 | sharpe_ratio | NUMERIC(10,4) | | |
 | trade_count | INT | | |
 | final_asset | NUMERIC(20,4) | | |
-| equity_curve | JSONB | NOT NULL | `[{date, asset}]` 시계열 — 수익곡선 차트 렌더링용 |
+| equity_curve | JSONB | NOT NULL | `[{at, asset}]` 시계열 — 수익곡선 차트 렌더링용. `at`은 날짜가 아니라 ISO8601 **시각**이다(구현 중 정정) — 분봉 백테스트는 하루에 여러 점이 나오는데 날짜로 접으면 곡선이 뭉개지기 때문이다 |
 | created_at | TIMESTAMPTZ | NOT NULL | |
 
 ### `backtest_trades` — 백테스팅 체결 상세 (신규, `06-backtesting` FR-B07)
@@ -317,7 +317,7 @@ erDiagram
 | 컬럼 | 타입 | 제약 | 설명 |
 |---|---|---|---|
 | id | BIGSERIAL | PK | |
-| backtest_result_id | BIGINT | FK → backtest_results.id | |
+| backtest_result_id | BIGINT | FK → backtest_results.id **ON DELETE CASCADE** | 결과를 지우면 체결 상세도 함께 사라진다 — 체결 상세는 결과에 종속된 값이라 독립적으로 존재할 의미가 없다 |
 | side | VARCHAR(4) | CHECK IN ('buy','sell') | |
 | price | NUMERIC(20,8) | NOT NULL | |
 | quantity | NUMERIC(28,8) | NOT NULL | |
@@ -364,7 +364,7 @@ CREATE UNIQUE INDEX ux_strategy_slots_active_coin
 
 `UNIQUE (coin_symbol, interval, opened_at)`. 인덱스: `(coin_symbol, interval, opened_at)`.
 
-Upbit는 캔들 API를 1회 최대 200개로 제한하고 레이트리밋이 있어, 백테스팅 30초 목표(FR-B05)를 지키려면 최초 조회 시 DB에 캐싱하고 이후 요청은 캐시를 우선 사용한다. 캐시에 없는 최신 구간만 API로 보충한다.
+Upbit는 캔들 API를 1회 최대 200개로 제한하고 레이트리밋이 있어, 백테스팅 60초 목표(FR-B05, 2026-09 확정)를 지키려면 최초 조회 시 DB에 캐싱하고 이후 요청은 캐시를 우선 사용한다. 캐시에 없는 최신 구간만 API로 보충한다.
 
 ---
 
@@ -428,7 +428,7 @@ Upbit는 캔들 API를 1회 최대 200개로 제한하고 레이트리밋이 있
 | 이벤트 | 처리 |
 |---|---|
 | 회원 탈퇴 (`04-settings`) | `users` 행 삭제, 하위 전 테이블 `ON DELETE CASCADE`로 함께 삭제 (하드 삭제) |
-| 모의투자 초기화 (`08-portfolio`) | 처리 순서: ① 활성(`is_active=true`) `strategy_slots`를 전부 `is_active=false`로 전환하고 `state`를 `{}`로 리셋 (진행 중이던 그리드/DCA 상태가 초기화된 `holdings`와 어긋나는 것을 방지) → ② `orders` / `holdings` / `deposits_withdrawals` 삭제 → ③ `balances`를 초기 시드머니 값으로 리셋. `users` / `backtest_results`, 그리고 `strategy_slots` 행 자체(설정값)는 보존 — 비활성화만 될 뿐 삭제되지 않는다 |
+| 모의투자 초기화 (`08-portfolio`) | **보류** — self-service 초기화는 프로젝트 방향과 맞지 않아 08 범위에서 제외했다 (사유·재검토 조건은 [08-portfolio.md](features/08-portfolio.md) 6장). 추후 관리자 기능으로 다시 설계할 때 처리 순서를 여기에 확정한다 — 그때 잠금 순서 규칙([09-execution-engine.md](features/09-execution-engine.md) 3.4절)을 따라야 한다는 점만 미리 남긴다 |
 
 ### 3.5 인덱스 요약
 
@@ -461,7 +461,7 @@ Upbit는 캔들 API를 1회 최대 200개로 제한하고 레이트리밋이 있
 - `grid`/`dca` 키는 해당 `strategy_type`일 때만 존재한다.
 - 모든 수치는 부동소수점 오차 방지를 위해 문자열로 저장한다 (3.3절 타입 컨벤션과 동일 취지).
 - 청산(손절·익절·그리드 이탈) 시 매도 수량은 `min(state.position.quantity, holdings.quantity)`로 상한을 건다 — 상세 규칙은 [07-auto-trading.md](features/07-auto-trading.md).
-- 슬롯 OFF 시 `state.position`은 유지한다 (재ON 시 이어서 관리). 모의투자 초기화 시에만 `{}`로 리셋한다 (3.4절).
+- 슬롯 OFF 시 `state.position`은 유지한다 (재ON 시 이어서 관리). 다만 OFF인 사이 그 코인을 수동 매도했을 수 있으므로, 재ON 시점에 `holdings.quantity`와 대조해 실제 보유량까지 낮춘다 ([07-auto-trading.md](features/07-auto-trading.md) 4.2절 — 보정하지 않으면 슬롯이 있지도 않은 포지션을 들고 있다고 믿어 재진입도 청산도 못 하게 된다).
 
 ### 3.7 예약가 주문 (`order_type='reserved'`)
 

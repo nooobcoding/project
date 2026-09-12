@@ -11,6 +11,7 @@ import { useCoins } from "../hooks/useCoins";
 import { useDashboardSummary } from "../hooks/useDashboardSummary";
 import { useRecentTrades } from "../hooks/useRecentTrades";
 import { usePriceStream } from "../hooks/usePriceStream";
+import { useStrategySlots } from "../hooks/useStrategySlots";
 import { useWatchlist } from "../hooks/useWatchlist";
 
 export function DashboardPage() {
@@ -18,6 +19,7 @@ export function DashboardPage() {
   const { items, selectedSymbol, selectSymbol, addItem, removeItem } = useWatchlist();
   const { trades, isLoading: isTradesLoading } = useRecentTrades();
   const { coins } = useCoins();
+  const { slots } = useStrategySlots();
 
   const watchlistSymbols = useMemo(() => items.map((item) => item.coin_symbol), [items]);
   const { prices, status } = usePriceStream(watchlistSymbols);
@@ -40,7 +42,7 @@ export function DashboardPage() {
         <div className="dashboard-column">
           <CoinTabSelector items={items} selectedSymbol={selectedSymbol} onSelect={selectSymbol} />
           <CandleChart symbol={selectedSymbol} tick={selectedTick} interval="1d" />
-          <AutoTradingStatusCard />
+          <AutoTradingStatusCard slots={slots} coins={coins} />
         </div>
         <div className="dashboard-column">
           <RecentTradesList trades={trades} isLoading={isTradesLoading} />

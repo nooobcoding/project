@@ -3,8 +3,8 @@
 status 전이(pending→filled/canceled)는 services/matcher.py(체결)와
 services/orders.py(취소)가 담당하며, 모델 자체는 상태를 갖되 전이 로직은 갖지 않는다.
 
-strategy_slot_id 컬럼은 strategy_slots 테이블이 아직 없어(07-auto-trading 미구현)
-이 모델에서 생략했다. 07 구현 시 컬럼·FK·인덱스를 함께 추가한다.
+strategy_slot_id는 source='auto'(07-auto-trading 워커 주문)일 때만 값을 가진다
+(01-erd.md 2장 orders 정의).
 """
 
 from datetime import datetime
@@ -35,6 +35,7 @@ class Order(Base):
         Index("ix_orders_user_created", "user_id", "created_at"),
         Index("ix_orders_user_status", "user_id", "status"),
         Index("ix_orders_user_source_created", "user_id", "source", "created_at"),
+        Index("ix_orders_strategy_slot", "strategy_slot_id"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -53,5 +54,10 @@ class Order(Base):
     # (services/matcher.py run_matching_for_symbol의 승격 단계 참고).
     trigger_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
     trigger_direction: Mapped[str | None] = mapped_column(String(7), nullable=True)
+    # 슬롯이 삭제돼도 체결 기록 자체는 남아야 하므로(잔고 이력의 근거·08-portfolio 거래내역)
+    # 연결만 끊는다 (ON DELETE SET NULL).
+    strategy_slot_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("strategy_slots.id", ondelete="SET NULL"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     filled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
