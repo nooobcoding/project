@@ -101,12 +101,69 @@ def mark_line_filled(
 
 
 def mark_line_empty(lines: list[dict[str, Any]], line_index: int) -> list[dict[str, Any]]:
-    """라인 하나를 "비움"으로 표시한 새 목록을 만든다 (매도 체결 후)."""
+    """라인 하나를 "비움"으로 표시한 새 목록을 만든다 (매도 체결 후).
+
+    **팔려던 수량이 전부 팔렸을 때만 쓴다.** 실매매에서는 슬롯이 팔려는 양보다 실제 가용
+    수량이 적을 수 있으므로(같은 코인에 수동 미체결 매도가 걸려 있거나, 슬롯 몫이 수동
+    매도로 이미 줄어든 경우) 그쪽은 `reduce_line_quantity`를 써야 한다. 백테스팅은 항상
+    라인 수량 전량이 체결되므로 이 함수를 그대로 쓴다.
+    """
     if not lines or not 0 <= line_index < len(lines):
         return lines
     updated = list(lines)
     updated[line_index] = {**lines[line_index], "filled": False, "quantity": "0"}
     return updated
+
+
+def reduce_line_quantity(
+    lines: list[dict[str, Any]], line_index: int, sold_quantity: Decimal
+) -> list[dict[str, Any]]:
+    """라인에서 **실제로 팔린 만큼만** 뺀다. 남은 수량이 0 이하면 빈 라인이 된다.
+
+    라인 수량보다 적게 팔렸는데 라인을 통째로 비우면 두 가지가 동시에 깨진다:
+
+    1. `Σ lines[].quantity == state.position.quantity` 불변식이 깨진다. `state.position`은
+       **실제 체결 수량**만큼만 줄어드는데 라인은 전량이 나간 것으로 기록되기 때문이다.
+    2. 그 라인이 "빈 라인"이 되어 **가격이 다시 내려오면 또 매수한다** — 이미 그 라인 몫을
+       들고 있는데 한 번 더 사는 것이므로 배정액을 넘긴다.
+
+    실제로 덜 팔리는 경로가 있다: 매도 수량은 `min(요청, 슬롯 포지션, 가용 코인 수량)`으로
+    상한이 걸리는데(worker `_sellable_quantity`), 같은 코인에 수동 미체결 매도가 남아 있거나
+    슬롯이 켜지기 전에 낸 수동 매도가 뒤늦게 체결되면 가용 수량이 라인 수량보다 작아진다
+    (docs/features/07-auto-trading.md 4.2절 — 슬롯은 자기가 매수한 몫만 관리한다).
+    """
+    if not lines or not 0 <= line_index < len(lines):
+        return lines
+
+    remaining = Decimal(lines[line_index]["quantity"]) - sold_quantity
+    if remaining <= 0:
+        return mark_line_empty(lines, line_index)
+
+    updated = list(lines)
+    updated[line_index] = {**lines[line_index], "filled": True, "quantity": str(remaining)}
+    return updated
+
+
+def drain_lines(lines: list[dict[str, Any]], sold_quantity: Decimal) -> list[dict[str, Any]]:
+    """전량 청산(하한가 이탈)에서 실제로 팔린 만큼을 **높은 가격 라인부터** 뺀다.
+
+    청산은 라인 하나가 아니라 포지션 전체를 파는 것이라 어느 라인에서 나갔는지가 없다.
+    코인은 대체 가능하므로 "어느 라인이었나"에 정답은 없고, 필요한 것은 불변식
+    (`Σ lines == position`)을 지키는 것뿐이다. 높은 가격부터 빼는 것은 그리드가 위 라인부터
+    파는 구조와 맞고, 샤드 재조정(`strategy_engine/reconcile.py` `_shrink_lines`)이 초과분을
+    털어내는 규칙과도 같아 두 경로가 같은 결론에 도달한다.
+    """
+    remaining = sold_quantity
+    order = sorted(range(len(lines)), key=lambda i: Decimal(lines[i]["price"]), reverse=True)
+    for index in order:
+        if remaining <= 0:
+            break
+        if not lines[index]["filled"]:
+            continue
+        taken = min(Decimal(lines[index]["quantity"]), remaining)
+        lines = reduce_line_quantity(lines, index, taken)
+        remaining -= taken
+    return lines
 
 
 def is_below_lower_bound(price: Decimal, params: dict[str, Any]) -> bool:

@@ -13,10 +13,12 @@ from decimal import Decimal
 from app.strategy_engine.grid import (
     allocation_per_line,
     build_line_prices,
+    drain_lines,
     evaluate,
     initial_lines,
     is_below_lower_bound,
     lines_match_params,
+    reduce_line_quantity,
     sell_target_price,
     step_size,
 )
@@ -133,3 +135,79 @@ def test_sells_come_before_buys_in_the_same_evaluation():
 
     assert [i.side for i in intents] == ["sell", "sell", "buy"]
     assert intents[-1].grid_line_index == 3
+
+
+# --- 덜 팔렸을 때의 라인 갱신 -----------------------------------------------
+#
+# 실매매에서는 슬롯이 팔려는 양보다 실제 가용 수량이 적을 수 있다(같은 코인의 수동 미체결
+# 매도 등). 그때 라인을 통째로 비우면 `Σ lines == state.position` 불변식이 깨지고, 그 라인이
+# 다시 매수 대상이 되어 이미 들고 있는 몫을 또 산다.
+
+
+def _filled(*quantities) -> list[dict]:
+    lines = initial_lines(PARAMS)
+    return [
+        {**line, "filled": Decimal(str(q)) > 0, "quantity": str(q)}
+        for line, q in zip(lines, quantities)
+    ]
+
+
+def _total(lines) -> Decimal:
+    return sum((Decimal(line["quantity"]) for line in lines if line["filled"]), Decimal(0))
+
+
+def test_partial_sell_leaves_the_remainder_on_the_line():
+    """라인 수량보다 적게 팔리면 남은 만큼이 라인에 그대로 남는다."""
+    lines = _filled(0, 0, "0.5", 0)
+
+    updated = reduce_line_quantity(lines, 2, Decimal("0.3"))
+
+    assert updated[2]["filled"] is True
+    assert Decimal(updated[2]["quantity"]) == Decimal("0.2")
+
+
+def test_full_sell_empties_the_line():
+    """전량 팔리면 지금까지대로 빈 라인이 된다."""
+    lines = _filled(0, 0, "0.5", 0)
+
+    updated = reduce_line_quantity(lines, 2, Decimal("0.5"))
+
+    assert updated[2]["filled"] is False
+    assert updated[2]["quantity"] == "0"
+
+
+def test_selling_more_than_the_line_holds_does_not_go_negative():
+    """라인 수량보다 많이 팔린 값이 들어와도 음수로 남지 않는다."""
+    updated = reduce_line_quantity(_filled(0, 0, "0.5", 0), 2, Decimal("0.9"))
+
+    assert updated[2]["filled"] is False
+    assert Decimal(updated[2]["quantity"]) == Decimal(0)
+
+
+def test_reduce_keeps_the_line_price_untouched():
+    """라인 가격은 격자 레벨이라 건드리면 안 된다 — lines_match_params가 이 값을 본다."""
+    lines = _filled(0, 0, "0.5", 0)
+
+    updated = reduce_line_quantity(lines, 2, Decimal("0.3"))
+
+    assert lines_match_params(updated, PARAMS)
+
+
+def test_drain_takes_from_the_highest_priced_lines_first():
+    """청산은 라인 지정이 없다 — 높은 가격 라인부터 뺀다 (그리드가 위에서부터 파는 구조)."""
+    lines = _filled(0, "0.2", "0.3", "0.4")
+
+    drained = drain_lines(lines, Decimal("0.5"))
+
+    assert Decimal(drained[3]["quantity"]) == Decimal(0)  # 175 라인이 먼저 비었다
+    assert Decimal(drained[2]["quantity"]) == Decimal("0.2")  # 150에서 0.1만 더 뺐다
+    assert Decimal(drained[1]["quantity"]) == Decimal("0.2")  # 125는 그대로
+    assert _total(drained) == Decimal("0.4")  # 0.9 - 0.5
+
+
+def test_drain_of_the_whole_position_empties_everything():
+    """전량 팔렸으면 라인이 전부 빈다."""
+    drained = drain_lines(_filled(0, "0.2", "0.3", "0.4"), Decimal("0.9"))
+
+    assert _total(drained) == Decimal(0)
+    assert all(line["filled"] is False for line in drained)

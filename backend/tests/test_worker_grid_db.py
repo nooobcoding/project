@@ -211,3 +211,119 @@ def test_grid_ignores_stop_loss_and_take_profit_pct(make_slot, test_user, set_pr
 
     assert len(_orders(test_user)) == buy_count
     assert "position" in load_slot_state(slot_id)
+
+
+# --- 실제 가용 수량이 라인 수량보다 적을 때 ---------------------------------
+#
+# 슬롯이 팔려는 양보다 실제로 팔 수 있는 양이 적을 수 있다 — 매도 수량은
+# `min(요청, 슬롯 포지션, 가용 코인 수량)`으로 상한이 걸리고, 같은 코인에 수동 미체결 매도가
+# 남아 있으면(자동매매를 켜기 전에 낸 주문은 그대로 살아 있다) 가용 수량이 그만큼 준다.
+#
+# **이때 라인을 통째로 비우면 안 된다.** `state.position`은 실제 체결 수량만큼만 줄어드는데
+# 라인은 전량이 나간 것으로 기록되므로 (a) `Σ lines == position` 불변식이 깨지고
+# (b) 그 라인이 다시 매수 대상이 되어 이미 들고 있는 몫을 또 사게 된다(배정액 초과).
+
+
+def _add_pending_manual_sell(user_id: int, symbol: str, quantity: Decimal) -> None:
+    """자동매매를 켜기 전에 낸 수동 지정가 매도가 아직 미체결로 남아 있는 상태.
+
+    `create_order`는 활성 슬롯이 있는 코인의 수동 주문을 막으므로(FR-M10) 행을 직접 넣는다 —
+    잠금은 **새 주문만** 막고 이미 낸 미체결 주문은 그대로 살아 있기 때문에, 이건 실제로
+    일어나는 상태다 (docs/features/07-auto-trading.md 5장).
+    """
+    with session_scope() as db:
+        db.add(
+            Order(
+                user_id=user_id,
+                coin_symbol=symbol,
+                side="sell",
+                order_type="limit",
+                price=Decimal("100000"),  # 체결되지 않을 만큼 높게 — 미체결로만 남는다
+                quantity=quantity,
+                status="pending",
+                source="manual",
+                fee=Decimal("0"),
+                created_at=datetime.now(timezone.utc),
+            )
+        )
+
+
+def _position_quantity(slot_id: int) -> Decimal:
+    position = load_slot_state(slot_id).get("position")
+    return Decimal(position["quantity"]) if position else Decimal(0)
+
+
+def _lines_quantity(slot_id: int) -> Decimal:
+    return sum(
+        (Decimal(line["quantity"]) for line in _lines(slot_id) if line["filled"]),
+        start=Decimal(0),
+    )
+
+
+@requires_db
+def test_partial_line_sell_keeps_the_remainder_on_the_line(
+    make_slot, test_user, test_coin, set_price, feed_candles
+):
+    """덜 팔렸으면 판 만큼만 라인에서 깎는다 — 라인을 통째로 비우지 않는다."""
+    slot_id = make_slot(
+        strategy_type="grid", indicator=None, params=GRID_PARAMS, invest_amount=INVEST
+    )
+    set_price(Decimal("160"))
+    feed_candles(_candles(190, 160))
+    worker.process_slot(slot_id)  # 라인 175 매수
+    bought = _position_quantity(slot_id)
+    assert bought > 0
+
+    # 보유분의 절반을 수동 미체결 매도가 묶어 둔다 → 가용 수량이 절반으로 준다.
+    locked = (bought / 2).quantize(Decimal("0.00000001"))
+    _add_pending_manual_sell(test_user, test_coin, locked)
+
+    set_price(Decimal("201"))
+    feed_candles(_candles(190, 160, 201))  # 라인 175의 목표(200) 도달
+    worker.process_slot(slot_id)
+
+    remaining_line = [line for line in _lines(slot_id) if line["filled"]]
+    assert remaining_line, "덜 팔렸는데 라인이 통째로 비워졌다 — 그 라인을 또 사게 된다"
+    assert _lines_quantity(slot_id) == _position_quantity(slot_id)
+
+
+@requires_db
+def test_partial_breakout_liquidation_keeps_lines_consistent(
+    make_slot, test_user, test_coin, set_price, feed_candles
+):
+    """하한가 이탈 청산도 덜 팔릴 수 있다 — 그때 라인을 전부 비우면 같은 사고가 난다."""
+    slot_id = make_slot(
+        strategy_type="grid", indicator=None, params=GRID_PARAMS, invest_amount=INVEST
+    )
+    set_price(Decimal("130"))
+    feed_candles(_candles(190, 130))
+    worker.process_slot(slot_id)
+    bought = _position_quantity(slot_id)
+    assert bought > 0
+
+    locked = (bought / 2).quantize(Decimal("0.00000001"))
+    _add_pending_manual_sell(test_user, test_coin, locked)
+
+    set_price(Decimal("90"))  # 하한가(100) 이탈
+    worker.process_slot(slot_id)
+
+    assert _position_quantity(slot_id) > 0  # 다 못 팔았으므로 포지션이 남는다
+    assert _lines_quantity(slot_id) == _position_quantity(slot_id)
+
+
+@requires_db
+def test_full_sell_still_empties_the_line(make_slot, test_user, set_price, feed_candles):
+    """전량 팔렸으면 지금까지대로 라인을 비운다 (수정이 정상 경로를 바꾸지 않는다)."""
+    slot_id = make_slot(
+        strategy_type="grid", indicator=None, params=GRID_PARAMS, invest_amount=INVEST
+    )
+    set_price(Decimal("160"))
+    feed_candles(_candles(190, 160))
+    worker.process_slot(slot_id)
+
+    set_price(Decimal("201"))
+    feed_candles(_candles(190, 160, 201))
+    worker.process_slot(slot_id)
+
+    assert all(line["filled"] is False for line in _lines(slot_id))
+    assert _lines_quantity(slot_id) == _position_quantity(slot_id) == Decimal(0)

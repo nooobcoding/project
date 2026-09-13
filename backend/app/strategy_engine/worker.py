@@ -373,22 +373,37 @@ def _try_exit(slot: _SlotSnapshot) -> bool:
     if intent is None:
         return False
 
-    if not _place_sell(slot, intent.quantity or Decimal(0)):
+    requested = intent.quantity or Decimal(0)
+    sold = _place_sell(slot, requested)
+    if sold <= 0:
         return False
 
-    _record_exit(slot, intent.reason)
+    _record_exit(slot, intent.reason, sold=sold, requested=requested)
     return True
 
 
-def _record_exit(slot: _SlotSnapshot, reason: str) -> None:
+def _record_exit(
+    slot: _SlotSnapshot, reason: str, *, sold: Decimal, requested: Decimal
+) -> None:
     """청산 체결 뒤 전략별 뒷정리 — 주문 자체 외에 남는 DB 작업이 여기 모인다."""
     if reason == exits.GRID_BREAKOUT:
         # 라인을 전부 비운다 — 포지션이 사라졌는데 라인이 "채워짐"으로 남아 있으면 가격이
         # 회복돼도 그 라인은 다시 매수되지 않고, 있지도 않은 수량을 팔려고 하게 된다. 슬롯은
         # 계속 ON으로 두어 가격이 범위 안으로 돌아오면 그리드를 다시 시작한다.
-        if slot_state.read_grid_lines(slot.state):
-            with session_scope() as db:
-                slot_state.write_grid_lines(db, slot.id, grid.initial_lines(slot.params))
+        #
+        # **단, 전량이 실제로 팔렸을 때만이다.** 가용 수량이 모자라 일부만 팔렸는데 라인을
+        # 전부 비우면 라인 합이 남은 포지션보다 작아져(불변식 위반) 그 몫을 다시 사게 된다.
+        # 덜 팔렸으면 판 만큼만 높은 가격 라인부터 뺀다.
+        lines = slot_state.read_grid_lines(slot.state)
+        if not lines:
+            return
+        drained = (
+            grid.initial_lines(slot.params)
+            if sold >= requested
+            else grid.drain_lines(lines, sold)
+        )
+        with session_scope() as db:
+            slot_state.write_grid_lines(db, slot.id, drained)
         return
 
     if reason == exits.DCA_TAKE_PROFIT:
@@ -515,8 +530,11 @@ def _execute_intent(slot: _SlotSnapshot, intent: TradeIntent) -> None:
         return
 
     sold = _place_sell(slot, intent.quantity or Decimal(0))
-    if sold and intent.grid_line_index is not None:
-        _write_grid_lines(slot, grid.mark_line_empty, intent.grid_line_index)
+    if sold > 0 and intent.grid_line_index is not None:
+        # **판 만큼만 깎는다.** 가용 수량이 모자라 덜 팔렸는데 라인을 통째로 비우면, 라인 합이
+        # state.position보다 작아지고(불변식 위반) 그 라인이 다시 매수 대상이 되어 배정액을
+        # 넘겨 산다 (grid.reduce_line_quantity docstring).
+        _write_grid_lines(slot, grid.reduce_line_quantity, intent.grid_line_index, sold)
 
 
 def _write_grid_lines(slot: _SlotSnapshot, mark, line_index: int, *args: Any) -> None:
@@ -573,12 +591,18 @@ def _place_buy(slot: _SlotSnapshot, amount: Decimal) -> tuple[Decimal, Decimal] 
         return None
 
 
-def _place_sell(slot: _SlotSnapshot, quantity: Decimal) -> bool:
-    """슬롯이 보유한 몫 안에서 `quantity`만큼 시장가로 매도한다. 주문을 냈으면 True."""
+def _place_sell(slot: _SlotSnapshot, quantity: Decimal) -> Decimal:
+    """슬롯이 보유한 몫 안에서 `quantity`만큼 시장가로 매도한다.
+
+    Returns:
+        **실제로 주문에 실린 수량.** 못 냈으면 0. 요청량보다 적을 수 있다 — 호출부는 이 값으로
+        라인을 깎아야 한다(`grid.reduce_line_quantity`). "주문을 냈다/못 냈다"만 돌려주면
+        덜 팔렸는데도 라인을 통째로 비우게 되고, 그 라인을 또 사서 배정액을 넘긴다.
+    """
     with session_scope() as db:
         sellable = _sellable_quantity(db, slot, quantity)
     if sellable <= 0:
-        return False
+        return Decimal(0)
 
     try:
         with session_scope() as db:
@@ -596,8 +620,8 @@ def _place_sell(slot: _SlotSnapshot, quantity: Decimal) -> bool:
         # 가용 수량을 이미 상한으로 걸었으므로 정상 경로에서는 나오지 않는다. 그 사이 다른
         # 매도가 끼어든 경우이므로 이번 청산만 건너뛴다.
         _record_skip(SKIP_INSUFFICIENT_HOLDING, slot.id)
-        return False
-    return True
+        return Decimal(0)
+    return sellable
 
 
 def _sellable_quantity(db, slot: _SlotSnapshot, requested: Decimal) -> Decimal:
