@@ -21,5 +21,26 @@ def shard_of(symbol: str) -> int:
     return crc32(symbol.encode()) % settings.shard_count
 
 
+def shard_of_user(user_id: int) -> int:
+    """유저가 속한 `worker` 샤드 번호 (7단계).
+
+    `crc32`가 아니라 나머지 연산인 것이 중요하다 — **애플리케이션과 SQL이 같은 식을 그대로
+    쓸 수 있다.** 워커는 자기 샤드의 슬롯을 SQL로 골라내야 하는데(`user_id % :n = ANY(:owned)`),
+    crc32였다면 Python `zlib.crc32`와 PostgreSQL이 같은 값을 내는지부터 맞춰야 했다
+    (03-worker-orchestration.md 2.1절).
+    """
+    return user_id % settings.shard_count
+
+
+def owned_by_user_shard(user_id_column, owned: set[int]):
+    """`user_id % SHARD_COUNT IN (...)` SQL 조건 (03-worker-orchestration.md 2.1절).
+
+    워커 tick과 샤드 재조정이 **같은 조건으로 같은 슬롯 집합**을 골라야 한다 — 둘이 어긋나면
+    "평가는 되는데 재조정은 안 되는" 슬롯이 생기고, 그건 정확히 재조정이 막으려던 사고가
+    조용히 남는 상태다. 그래서 한 곳에서만 만든다.
+    """
+    return (user_id_column % settings.shard_count).in_(sorted(owned))
+
+
 def all_shards() -> range:
     return range(settings.shard_count)

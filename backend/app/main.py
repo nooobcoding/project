@@ -45,7 +45,11 @@ from app.services import (
 from app.services.coin_sync import sync_coins
 from app.services.matcher_runner import run_matcher
 from app.services.price_stream import run_market_data
-from app.strategy_engine.worker import TICK_INTERVAL_SECONDS, run_tick
+from app.strategy_engine.worker import (
+    TICK_INTERVAL_SECONDS,
+    release_shards as release_worker_shards,
+    run_tick,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +67,13 @@ SHARD_COVERAGE_CHECK_SECONDS = 60
 # 둘이면 캔들 미리 채우기가 두 배로 돌아 토큰 버킷을 그만큼 헛되이 태운다.
 _scheduler_leader = leader.LeaderLock("scheduler")
 _was_leader: bool | None = None
+
+
+def _check_shard_coverage() -> None:
+    """matcher(심볼)·worker(유저) 샤드를 둘 다 본다. 한쪽 조회가 실패해도 다른 쪽은 봐야
+    하므로 `check_*` 안에서 각자 예외를 삼킨다 (services/shard_coverage.py)."""
+    shard_coverage.check_matcher_shards()
+    shard_coverage.check_worker_shards()
 
 
 def _leading() -> bool:
@@ -150,7 +161,7 @@ async def lifespan(app: FastAPI):
             coalesce=True,
         )
         scheduler.add_job(
-            _scheduler_job("샤드 커버리지 검사", shard_coverage.check_matcher_shards),
+            _scheduler_job("샤드 커버리지 검사", _check_shard_coverage),
             IntervalTrigger(seconds=SHARD_COVERAGE_CHECK_SECONDS),
             max_instances=1,
             coalesce=True,
@@ -185,9 +196,12 @@ async def lifespan(app: FastAPI):
         with suppress(asyncio.CancelledError):
             await task
     scheduler.shutdown()
-    # 락을 명시적으로 풀어 다음 scheduler 프로세스의 승격을 앞당긴다. 안 풀어도 세션이
-    # 끊기면 자동으로 풀리지만, 그때까지는 아무도 캔들을 채우지 않는다.
+    # 락을 명시적으로 풀어 다음 프로세스의 승격을 앞당긴다. 안 풀어도 세션이 끊기면 자동으로
+    # 풀리지만, 그때까지 scheduler 샤드는 아무도 캔들을 안 채우고 worker 샤드는 그 유저들의
+    # 자동매매가 통째로 멈춘 상태다.
     _scheduler_leader.release()
+    if "worker" in roles:
+        release_worker_shards()
 
 
 app = FastAPI(title="코인 자동매매 프로그램 API", lifespan=lifespan)

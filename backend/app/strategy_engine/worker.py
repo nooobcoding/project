@@ -21,6 +21,18 @@ tick 1회가 슬롯 하나에 대해 하는 일은 두 가지이고, 트리거 �
 **워커는 Upbit REST를 부르지 않는다** (확장판 6단계, docs-scale/03-worker-orchestration.md
 5.1절). 캔들은 DB 캐시만 읽고, 없으면 이번 tick 평가를 건너뛴 뒤 기록한다. 캐시를 채우는
 일은 `scheduler` 역할이 맡는다 (services/candle_prefill.py).
+
+**워커는 자기가 점유한 샤드의 슬롯만 순회한다** (확장판 7단계, 같은 문서 2장). 샤딩 키는
+`user_id`다 — 심볼로 나누면 BTC 쏠림 하나로 프로세스를 늘려도 유효 병렬도가 안 오른다
+(00-architecture.md 3.1절). `max_instances=1`은 한 프로세스 안에서만 유효하므로, 프로세스를
+늘리는 순간 그것만으로는 중복 평가를 막지 못한다.
+
+**샤딩이 보장하는 것은 "한 유저의 슬롯이 두 워커에서 동시에 평가되지 않는다" 하나뿐이다.**
+자금 정합성은 여전히 DB가 지킨다 — 같은 `balances` 행을 matcher(심볼 샤드)와 api(수동 주문)도
+건드리므로, 09-execution-engine.md 3.4절 잠금 순서 규칙이 그대로 유효하다
+(00-architecture.md 3.1.1절). 그리고 `claim_candle`의 조건부 갱신이 샤드 소유권과 **무관하게**
+두 번째 방어선으로 남는다 — 재균형 중 두 프로세스가 같은 슬롯을 잠깐 보더라도 주문은 한 번만
+나간다.
 """
 
 import logging
@@ -32,14 +44,16 @@ from typing import Any
 
 from sqlalchemy import select
 
+from app.config import settings
 from app.constants import TRADING_FEE_RATE
 from app.database import session_scope
 from app.strategy_engine.costs import calc_buy_amount, calc_buy_quantity
 from app.models import Coin, Notification, NotificationSetting, StrategySlot
 from app.services import candles as candles_service
-from app.services import heartbeat
+from app.services import heartbeat, leader, sharding
 from app.services import notifications as notifications_service
 from app.services import price_cache, slot_state
+from app.strategy_engine import reconcile
 from app.services.orders import (
     InsufficientBalanceError,
     InsufficientHoldingError,
@@ -66,6 +80,11 @@ SKIP_NO_CANDLES = "candles"
 SKIP_NO_PRICE = "price"
 SKIP_INSUFFICIENT_BALANCE = "balance"
 SKIP_INSUFFICIENT_HOLDING = "holding"
+
+# 이 프로세스가 점유한 워커 샤드. tick마다 갱신하며, 이전 tick 대비 **새로 잡은** 샤드가
+# 재조정 대상이다 (03-worker-orchestration.md 2.4절).
+_shards: "leader.ShardLocks | None" = None
+_owned_shards: set[int] = set()
 
 
 def _record_skip(reason: str, slot_id: int, detail: str = "") -> None:
@@ -107,49 +126,127 @@ class _CandlePoint:
     close: Decimal
 
 
+@dataclass
+class _ShardStats:
+    """샤드 하나의 이번 tick 집계. 샤드별로 따로 남겨야 편차가 보인다 —
+    관리자 화면이 이 값으로 `SHARD_COUNT`를 올릴 시점을 판단한다 (5.2절)."""
+
+    item_count: int = 0
+    duration_ms: int = 0
+    error_count: int = 0
+    skip_count: int = 0
+
+
+def _shard_locks() -> leader.ShardLocks:
+    """이 프로세스의 워커 샤드 점유. 프로세스 수명 내내 **전용 커넥션 하나**를 붙잡는다
+    (2.2절 함정 — 풀에서 꺼낸 커넥션으로 잠그면 반납·재활용되는 순간 락이 풀리고, 두
+    프로세스가 같은 샤드를 점유해 중복 주문이 나기 시작한다)."""
+    global _shards
+    if _shards is None:
+        _shards = leader.ShardLocks(
+            leader.WORKER_SHARD_NAMESPACE, settings.shard_count, "worker"
+        )
+    return _shards
+
+
+def release_shards() -> None:
+    """프로세스 종료 시 샤드를 놓는다 (main.py lifespan). 안 놓아도 세션이 끊기면 풀리지만,
+    명시적으로 풀어야 남은 프로세스가 다음 주기에 바로 집어간다."""
+    global _shards, _owned_shards
+    if _shards is not None:
+        _shards.release_all()
+        _shards = None
+    _owned_shards = set()
+
+
 def run_tick() -> None:
-    """활성 슬롯 전체를 1회 순회한다. APScheduler가 TICK_INTERVAL_SECONDS마다 호출한다.
+    """점유한 샤드의 활성 슬롯을 1회 순회한다. APScheduler가 TICK_INTERVAL_SECONDS마다 호출한다.
 
     슬롯 하나의 실패가 나머지 슬롯을 막지 않도록 슬롯 단위로 예외를 삼키고 로그만 남긴다
     (main.py의 coins 동기화 잡과 같은 방침). tick이 끝나면 소요 시간·예외·건너뛴 횟수를
-    worker_heartbeats에 남긴다 (확장판 00단계, docs-scale/06-observability.md).
+    **샤드별로** worker_heartbeats에 남긴다 (확장판 00단계, docs-scale/06-observability.md).
     """
-    global _tick_skip_count
+    global _tick_skip_count, _owned_shards
     _tick_skip_count = 0
     started_at = datetime.now(timezone.utc)
     tick_start = time.monotonic()
-    error_count = 0
-    slot_ids: list[int] = []
+    stats: dict[int, _ShardStats] = {}
 
+    previous = _owned_shards
+    owned = _shard_locks().refresh()
+    _owned_shards = owned
+    if not owned:
+        # 아무 샤드도 못 잡았다. 다른 프로세스가 전부 쥐고 있거나 DB가 흔들린 것이다.
+        # 어느 쪽이든 이번 tick에 할 일이 없다 — 빈 샤드 자체는 커버리지 검사가 잡는다
+        # (services/shard_coverage.py).
+        return
+
+    # **새로 점유한 샤드는 재조정부터 한다** (2.4절). 이 샤드를 이전에 들고 있던 프로세스가
+    # 체결 직후·상태 기록 직전에 죽었을 수 있고, 그대로 평가하면 그리드는 같은 라인을 또
+    # 사고 DCA는 10초 뒤에 또 산다. 점유가 곧 복구 트리거다.
+    newly_acquired = owned - previous
+    if newly_acquired:
+        reconcile.reconcile_shards(newly_acquired)
+
+    slots: list[tuple[int, int]] = []
     try:
-        slot_ids = _load_active_slot_ids()
+        slots = _load_active_slots(owned)
     except Exception:
-        logger.exception("자동매매 워커: 활성 슬롯 조회 실패")
-        error_count += 1
+        logger.exception("자동매매 워커: 활성 슬롯 조회 실패 (shards=%s)", sorted(owned))
+        for shard_id in owned:
+            stats.setdefault(shard_id, _ShardStats()).error_count += 1
 
-    for slot_id in slot_ids:
+    for shard_id, slot_id in slots:
+        shard_stats = stats.setdefault(shard_id, _ShardStats())
+        shard_stats.item_count += 1
+        slot_start = time.monotonic()
+        skips_before = _tick_skip_count
         try:
             process_slot(slot_id)
         except Exception:
             logger.exception("자동매매 워커: 슬롯 %s 처리 실패", slot_id)
-            error_count += 1
+            shard_stats.error_count += 1
+        finally:
+            shard_stats.duration_ms += int((time.monotonic() - slot_start) * 1000)
+            shard_stats.skip_count += _tick_skip_count - skips_before
 
-    duration_ms = int((time.monotonic() - tick_start) * 1000)
-    try:
-        heartbeat.record_tick(
-            role="worker",
-            shard_id=None,
-            started_at=started_at,
-            duration_ms=duration_ms,
-            budget_ms=TICK_INTERVAL_SECONDS * 1000,
-            item_count=len(slot_ids),
-            error_count=error_count,
-            skip_count=_tick_skip_count,
+    total_ms = int((time.monotonic() - tick_start) * 1000)
+    if total_ms > TICK_INTERVAL_SECONDS * 1000:
+        # 샤드별 행만 보면 이 초과가 안 보인다 — 샤드 하나하나는 예산 안인데 합이 넘는
+        # 경우가 정확히 "샤드를 더 나눠야 하는" 상태다 (5.2절 조용히 넘기지 않는다).
+        logger.warning(
+            "worker tick 예산 초과: %dms > %dms (샤드 %d개, 슬롯 %d개)",
+            total_ms,
+            TICK_INTERVAL_SECONDS * 1000,
+            len(owned),
+            len(slots),
         )
-    except Exception:
-        # 관측이 관측 대상을 망가뜨려서는 안 된다 — DB가 잠깐 흔들리거나 마이그레이션이
-        # 아직 안 올라갔다고 해서 tick 잡이 예외로 끝나면 안 된다.
-        logger.exception("자동매매 워커: heartbeat 기록 실패")
+
+    _write_heartbeats(owned, stats, started_at)
+
+
+def _write_heartbeats(
+    owned: set[int], stats: dict[int, _ShardStats], started_at: datetime
+) -> None:
+    """샤드마다 한 행씩 남긴다. 슬롯이 하나도 없는 샤드도 남겨야 한다 — 행이 없으면
+    "점유 중인데 한가한 샤드"와 "아무도 점유 안 한 샤드"가 구분되지 않는다."""
+    for shard_id in sorted(owned):
+        shard_stats = stats.get(shard_id, _ShardStats())
+        try:
+            heartbeat.record_tick(
+                role="worker",
+                shard_id=shard_id,
+                started_at=started_at,
+                duration_ms=shard_stats.duration_ms,
+                budget_ms=TICK_INTERVAL_SECONDS * 1000,
+                item_count=shard_stats.item_count,
+                error_count=shard_stats.error_count,
+                skip_count=shard_stats.skip_count,
+            )
+        except Exception:
+            # 관측이 관측 대상을 망가뜨려서는 안 된다 — DB가 잠깐 흔들리거나 마이그레이션이
+            # 아직 안 올라갔다고 해서 tick 잡이 예외로 끝나면 안 된다.
+            logger.exception("자동매매 워커: heartbeat 기록 실패 (shard=%s)", shard_id)
 
 
 def process_slot(slot_id: int) -> None:
@@ -172,9 +269,23 @@ def process_slot(slot_id: int) -> None:
     _try_signal(slot)
 
 
-def _load_active_slot_ids() -> list[int]:
+def _load_active_slots(owned: set[int]) -> list[tuple[int, int]]:
+    """점유한 샤드의 활성 슬롯 `(shard_id, slot_id)` 목록 (2.1절의 SQL).
+
+    샤드 번호를 SQL에서 함께 받아 온다 — 애플리케이션에서 다시 계산하면 두 곳의 식이
+    어긋날 여지가 생기는데, 그게 어긋나면 슬롯이 통계상 엉뚱한 샤드에 잡힌다.
+    """
     with session_scope() as db:
-        return list(db.scalars(select(StrategySlot.id).where(StrategySlot.is_active)))
+        rows = db.execute(
+            select(
+                (StrategySlot.user_id % settings.shard_count).label("shard_id"),
+                StrategySlot.id,
+            ).where(
+                StrategySlot.is_active,
+                sharding.owned_by_user_shard(StrategySlot.user_id, owned),
+            )
+        ).all()
+    return [(int(row.shard_id), row.id) for row in rows]
 
 
 def _load_slot_snapshot(slot_id: int) -> _SlotSnapshot | None:

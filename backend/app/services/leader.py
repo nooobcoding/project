@@ -43,8 +43,11 @@ _KEEPALIVE_ARGS = {
 ROLE_LEADER_NAMESPACE = 4001
 _ROLE_LOCK_IDS = {"market-data": 1, "scheduler": 2}
 
-# 심볼 샤드 점유용 (02-market-data.md 4.3절). 7단계의 worker 샤드는 또 다른 값을 쓴다.
+# 심볼 샤드 점유용 (02-market-data.md 4.3절).
 MATCHER_SHARD_NAMESPACE = 4002
+# 유저 샤드 점유용 (03-worker-orchestration.md 2.1절). matcher와 네임스페이스를 나누는 것이
+# 필수다 — 같이 쓰면 matcher가 쥔 샤드 번호를 worker가 못 잡는다.
+WORKER_SHARD_NAMESPACE = 4003
 
 
 @lru_cache
