@@ -174,26 +174,50 @@ def run_tick() -> None:
 
     previous = _owned_shards
     owned = _shard_locks().refresh()
-    _owned_shards = owned
     if not owned:
         # 아무 샤드도 못 잡았다. 다른 프로세스가 전부 쥐고 있거나 DB가 흔들린 것이다.
         # 어느 쪽이든 이번 tick에 할 일이 없다 — 빈 샤드 자체는 커버리지 검사가 잡는다
         # (services/shard_coverage.py).
+        _owned_shards = owned
         return
 
     # **새로 점유한 샤드는 재조정부터 한다** (2.4절). 이 샤드를 이전에 들고 있던 프로세스가
     # 체결 직후·상태 기록 직전에 죽었을 수 있고, 그대로 평가하면 그리드는 같은 라인을 또
     # 사고 DCA는 10초 뒤에 또 산다. 점유가 곧 복구 트리거다.
+    #
+    # **재조정에 실패한 샤드는 이번 tick에 거래하지 않는다.** 실패했는데도 점유 기록에
+    # 넣어버리면 그 샤드는 "재조정을 마친 샤드"가 되어 다시는 재조정되지 않고, 재조정이
+    # 막으려던 창이 그대로 열린 채로 주문이 나간다 — DB가 잠깐 흔들린 것만으로 중복 매수가
+    # 난다. 못 미더운 상태 위에서 자금을 움직이는 것보다 한 주기 쉬는 편이 낫다.
     newly_acquired = owned - previous
+    unreconciled: set[int] = set()
     if newly_acquired:
-        reconcile.reconcile_shards(newly_acquired)
+        report = reconcile.reconcile_shards(newly_acquired)
+        if report.errors:
+            unreconciled = newly_acquired
+            logger.warning(
+                "자동매매 워커: 샤드 %s 재조정에 실패해 이번 tick은 건너뛴다 (다음 주기에 재시도)",
+                sorted(unreconciled),
+            )
+            # 지표에도 남긴다 — 안 남기면 이 샤드는 heartbeat상 "슬롯 0개인 한가한 샤드"와
+            # 구분되지 않는다. 실제로는 그 샤드의 자동매매가 통째로 멈춰 있는 상태다.
+            for shard_id in unreconciled:
+                stats.setdefault(shard_id, _ShardStats()).error_count += report.errors
+
+    # 재조정에 실패한 샤드는 점유 기록에 넣지 않는다 — 다음 tick에 "새로 점유한 샤드"로
+    # 다시 잡혀 재조정을 다시 시도하게 된다.
+    _owned_shards = owned - unreconciled
+    tradable = _owned_shards
+    if not tradable:
+        _write_heartbeats(owned, stats, started_at)
+        return
 
     slots: list[tuple[int, int]] = []
     try:
-        slots = _load_active_slots(owned)
+        slots = _load_active_slots(tradable)
     except Exception:
-        logger.exception("자동매매 워커: 활성 슬롯 조회 실패 (shards=%s)", sorted(owned))
-        for shard_id in owned:
+        logger.exception("자동매매 워커: 활성 슬롯 조회 실패 (shards=%s)", sorted(tradable))
+        for shard_id in tradable:
             stats.setdefault(shard_id, _ShardStats()).error_count += 1
 
     for shard_id, slot_id in slots:

@@ -27,7 +27,7 @@
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -36,7 +36,8 @@ from sqlalchemy.orm import Session
 
 from app.constants import TRADING_FEE_RATE
 from app.database import session_scope
-from app.models import Order, StrategySlot
+from app.models import Coin, Notification, NotificationSetting, Order, StrategySlot
+from app.services import notifications as notifications_service
 from app.services import sharding, slot_state
 from app.strategy_engine import dca, grid
 from app.strategy_engine.costs import calc_buy_amount
@@ -106,11 +107,20 @@ def reconcile_slot(slot_id: int, report: ReconcileReport) -> None:
         slot = db.get(StrategySlot, slot_id)
         if slot is None or not slot.is_active:
             return
+        reconcile_in_session(db, slot, report)
 
-        if slot.strategy_type == "grid":
-            _reconcile_grid_lines(db, slot, report)
-        elif slot.strategy_type == "dca":
-            _reconcile_dca_progress(db, slot, report)
+
+def reconcile_in_session(db: Session, slot: StrategySlot, report: ReconcileReport) -> None:
+    """호출자의 트랜잭션에 참여하는 재조정. 커밋하지 않는다.
+
+    샤드 점유 경로 외에 **슬롯 ON 경로**(`services/strategy_slots.py` `toggle_slot`)도 이걸
+    부른다. 재조정이 슬롯을 OFF한 뒤 사용자가 그대로 다시 켜면, 샤드를 다음에 점유할 때까지
+    못 미더운 상태 위에서 거래가 재개되기 때문이다 — ON 시점이 그 구멍을 닫는 자리다.
+    """
+    if slot.strategy_type == "grid":
+        _reconcile_grid_lines(db, slot, report)
+    elif slot.strategy_type == "dca":
+        _reconcile_dca_progress(db, slot, report)
 
 
 # --- 그리드 --------------------------------------------------------------
@@ -153,6 +163,9 @@ def _reconcile_grid_lines(db: Session, slot: StrategySlot, report: ReconcileRepo
             position_quantity,
         )
         slot.is_active = False
+        # **서버 로그로만 끄면 안 된다.** 사용자에게는 자동매매가 아무 설명 없이 멈춘 것으로
+        # 보인다 — 워커가 슬롯을 끄는 다른 경로(DCA 목표 수익 달성)도 전부 알림을 낸다.
+        _notify_disabled(db, slot)
         report.disabled += 1
         return
 
@@ -162,6 +175,34 @@ def _reconcile_grid_lines(db: Session, slot: StrategySlot, report: ReconcileRepo
         "샤드 재조정: 슬롯 %s 그리드 라인을 체결 기록으로 복구했다 (포지션=%s)",
         slot.id,
         position_quantity,
+    )
+
+
+def _notify_disabled(db: Session, slot: StrategySlot) -> None:
+    """슬롯이 멈췄다는 사실을 사용자에게 알린다.
+
+    `services/notifications.py`의 설정 조회를 쓰지 않고 `db.get`으로 직접 읽는다 — 그 함수는
+    내부에서 커밋하고, 여기는 재조정 트랜잭션 한가운데다 (03-worker-orchestration.md 3.3절
+    "체결 트랜잭션 안에서 호출하는 어떤 함수도 스스로 커밋해서는 안 된다"와 같은 이유).
+    """
+    settings_row = db.get(NotificationSetting, slot.user_id)
+    if not notifications_service.is_type_enabled(settings_row, "error"):
+        return
+    coin = db.get(Coin, slot.coin_symbol)
+    name = coin.korean_name if coin is not None else slot.coin_symbol
+    db.add(
+        Notification(
+            user_id=slot.user_id,
+            type="error",
+            message=(
+                f"[{name}] 자동매매 진행 상태가 체결 기록과 맞지 않아 자동매매를 중지했습니다. "
+                "보유 현황을 확인한 뒤 다시 켜주세요."
+            ),
+            coin_symbol=slot.coin_symbol,
+            strategy_slot_id=slot.id,
+            is_read=False,
+            created_at=datetime.now(timezone.utc),
+        )
     )
 
 
@@ -215,6 +256,10 @@ def _refill_lines(
     if deficit <= 0:
         return lines
 
+    # 되채울 수 있는 라인은 빈 라인 수만큼뿐이고, 주문 하나가 라인 하나를 채운다. 그래서
+    # 그만큼만 읽으면 충분하다 — 주문 이력 전체를 읽으면 오래된 슬롯일수록 재조정이 느려지고,
+    # 재조정은 tick 안에서 손절 판정보다 먼저 도는 구간이다.
+    empty_line_count = sum(1 for line in lines if not line["filled"])
     orders = db.scalars(
         select(Order)
         .where(
@@ -224,6 +269,7 @@ def _refill_lines(
             Order.status == "filled",
         )
         .order_by(Order.filled_at.desc())
+        .limit(empty_line_count)
     ).all()
 
     for order in orders:
@@ -258,57 +304,74 @@ def _reconcile_dca_progress(db: Session, slot: StrategySlot, report: ReconcileRe
 
     1. **`next_buy_at` 이후에 체결된 auto 매수가 있으면 그 매수는 이미 일어난 것이다.**
        예정 시각을 그 주문 기준으로 민다. 안 밀면 10초 뒤 다음 tick에 바로 또 산다.
-    2. **지출·횟수는 되짚어 계산하되 내리지는 않는다.** `_write_dca_state`가 유실되면
-       `spent_amount`가 안 쌓여 예산 상한(`invest_amount`)이 풀린다 — 그리드 배정액 초과와
-       같은 사고다. 다만 재구성값이 저장값보다 **작게** 나오는 경우(슬롯을 껐다 켜며 주문이
-       정리된 경우 등)에 그대로 쓰면 상한이 되레 느슨해지므로, 큰 쪽만 취한다.
+    2. **그 매수가 남겼어야 할 나머지도 함께 옮긴다** — `last_buy_price`, `executed_count`,
+       `spent_amount`. 하나라도 빠뜨리면 각각 다른 사고가 된다 (본문 주석 참고).
+
+    **기준점은 `next_buy_at`이고, 전체 체결 이력을 다시 합산하지 않는다.** 전량 합산은
+    슬롯이 grid에서 dca로 바뀐 경우(`services/strategy_slots.py` `update_slot`은 전략을
+    바꿀 때 state를 지우지 않는다) 예전 그리드 주문까지 세어 **예산을 즉시 소진시키고, 그
+    슬롯은 아무 오류 없이 영영 안 산다.** 크래시를 고치려다 크래시 없이도 터지는 사고를
+    만드는 셈이다.
+
+    **한계**: 추가 매수(`dca_extra`)는 `next_buy_at`을 밀지 않으므로 이 기준으로는 "기록 안
+    된 매수"로 잡히지 않는다. 그 회차의 상태 기록이 유실되면 지출이 그만큼 덜 쌓인다 —
+    상한이 조금 느슨해지는 방향이며, 확장판 이전과 같은 수준이다.
     """
     dca_state = dca.read_state(slot.state)
-    orders = db.scalars(
+    next_buy_at = dca_state["next_buy_at"]
+    if next_buy_at is None:
+        # 아직 한 번도 안 샀거나 진행 상태가 없다. 기준점이 없으면 어떤 체결이 "기록 안 된
+        # 것"인지 판단할 수 없으므로 아무것도 하지 않는다 — 판단 근거 없이 자금 상태를
+        # 되짚지 않는다.
+        return
+
+    scheduled = _parse(next_buy_at)
+    # **기준점이 `next_buy_at`이라는 것이 이 재조정의 핵심이다.** 정기 매수가 기록됐다면
+    # 그 시점에 `next_buy_at`이 미래로 밀렸을 것이므로, `next_buy_at` 이후에 체결된 auto
+    # 매수는 **정의상 아직 기록되지 않은 매수다.** 전체 체결 이력을 다시 합산하지 않는
+    # 이유이기도 하다 — 전량 합산은 (a) 슬롯이 grid에서 dca로 바뀌면 예전 그리드 주문까지
+    # 세어 예산을 순식간에 소진시키고, (b) 주문 이력 전체를 매번 읽는다.
+    unrecorded = db.scalars(
         select(Order)
         .where(
             Order.strategy_slot_id == slot.id,
             Order.source == "auto",
             Order.side == "buy",
             Order.status == "filled",
+            Order.filled_at >= scheduled,
         )
         .order_by(Order.filled_at.desc())
     ).all()
-    if not orders:
+    if not unrecorded:
         return
 
+    latest = unrecorded[0]
     updated = dict(dca_state)
-    changed = False
-
-    latest = orders[0]
-    next_buy_at = dca_state["next_buy_at"]
-    if next_buy_at is not None and latest.filled_at is not None:
-        if latest.filled_at >= _parse(next_buy_at):
-            updated["next_buy_at"] = dca.next_schedule(latest.filled_at, slot.params).isoformat()
-            changed = True
-
-    rebuilt_count = len(orders)
-    if rebuilt_count > int(dca_state["executed_count"]):
-        updated["executed_count"] = rebuilt_count
-        changed = True
-
-    rebuilt_spent = sum(
-        (calc_buy_amount(order.price, order.quantity, TRADING_FEE_RATE) for order in orders),
-        start=Decimal(0),
+    # 1. 예정 시각을 그 매수 기준으로 민다 — 안 밀면 10초 뒤 다음 tick에 바로 또 산다.
+    updated["next_buy_at"] = dca.next_schedule(latest.filled_at, slot.params).isoformat()
+    # 2. `last_buy_price`도 반드시 함께 옮긴다. 안 옮기면 기준점이 옛 매수가(더 높은 값)에
+    #    남아, 추가매수 조건(`-X%`)이 이번 체결가 대비로 잘못 성립한다 — 크래시가 없었다면
+    #    일어나지 않았을 매수를 재조정이 만들어내는 셈이 된다 (strategy_engine/dca.py
+    #    `evaluate`의 extra_buy 분기).
+    updated["last_buy_price"] = str(latest.price)
+    # 3. 횟수·지출에 기록 안 된 매수를 더한다. 안 더하면 예산 상한(invest_amount)이 그만큼
+    #    풀려 상한을 넘겨 산다.
+    updated["executed_count"] = int(dca_state["executed_count"]) + len(unrecorded)
+    updated["spent_amount"] = str(
+        Decimal(dca_state["spent_amount"])
+        + sum(
+            (calc_buy_amount(order.price, order.quantity, TRADING_FEE_RATE) for order in unrecorded),
+            start=Decimal(0),
+        )
     )
-    if rebuilt_spent > Decimal(dca_state["spent_amount"]):
-        updated["spent_amount"] = str(rebuilt_spent)
-        changed = True
-
-    if not changed:
-        return
 
     slot_state.write_dca_state(db, slot.id, updated)
     report.dca_repaired += 1
     logger.warning(
-        "샤드 재조정: 슬롯 %s DCA 진행 상태를 체결 기록으로 복구했다 "
+        "샤드 재조정: 슬롯 %s DCA 진행 상태를 복구했다 — 기록 안 된 매수 %d건 "
         "(next_buy_at=%s, 횟수=%s, 지출=%s)",
         slot.id,
+        len(unrecorded),
         updated["next_buy_at"],
         updated["executed_count"],
         updated["spent_amount"],

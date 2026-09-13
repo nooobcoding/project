@@ -218,3 +218,56 @@ def test_user_shard_matches_sql_expression(test_user):
             from_sql = db.scalar(select(func.mod(test_user, settings.shard_count)))
 
     assert int(from_sql) == sharding.shard_of_user(test_user)
+
+
+@requires_db
+def test_failed_reconcile_blocks_trading_and_retries(
+    make_slot, test_user, test_coin, set_price, feed_candles, monkeypatch
+):
+    """재조정에 실패한 샤드는 이번 tick에 거래하지 않고, 다음 tick에 다시 시도한다.
+
+    **실패했는데도 점유 기록에 넣으면** 그 샤드는 "재조정을 마친 샤드"가 되어 다시는
+    재조정되지 않는다. DB가 잠깐 흔들린 것만으로 그리드 재매수·DCA 중복 매수의 창이 열린
+    채 주문이 나가게 된다 — 재조정이 막으려던 바로 그 사고다.
+    """
+    from app.strategy_engine import reconcile
+
+    make_slot(params=MA_PARAMS)
+    set_price(PRICE)
+    my_shard = sharding.shard_of_user(test_user)
+    monkeypatch.setattr(leader.ShardLocks, "refresh", lambda self: {my_shard})
+
+    calls: list[set[int]] = []
+
+    def _failing(shards: set[int]):
+        calls.append(set(shards))
+        return reconcile.ReconcileReport(checked=1, errors=1)
+
+    monkeypatch.setattr(worker.reconcile, "reconcile_shards", _failing)
+
+    worker.run_tick()
+    assert _order_count(test_user) == 0  # 못 미더운 상태 위에서 주문을 내지 않는다
+
+    # 막힌 샤드는 지표에서도 "한가한 샤드"와 구분돼야 한다.
+    from app.models import WorkerHeartbeat
+    from app.services import heartbeat
+
+    with session_scope() as db:
+        errors = db.scalar(
+            select(WorkerHeartbeat.error_count).where(
+                WorkerHeartbeat.role == "worker",
+                WorkerHeartbeat.process_id == heartbeat._PROCESS_ID,
+                WorkerHeartbeat.shard_id == my_shard,
+            )
+        )
+    assert errors and errors >= 1
+
+    worker.run_tick()
+    assert calls == [{my_shard}, {my_shard}]  # 다음 tick에 다시 시도한다
+
+    # 재조정이 성공하면 그때부터 정상 거래한다.
+    monkeypatch.setattr(
+        worker.reconcile, "reconcile_shards", lambda shards: reconcile.ReconcileReport()
+    )
+    worker.run_tick()
+    assert _order_count(test_user) == 1

@@ -27,6 +27,7 @@ from app.services.strategy_slots import (
     InvalidSlotInputError,
     SlotActiveError,
     SlotHasPositionError,
+    SlotStateInconsistentError,
     SlotNotFoundError,
     create_slot,
     delete_slot,
@@ -179,6 +180,14 @@ def patch_strategy_slot(
         raise HTTPException(
             status_code=http_status.HTTP_409_CONFLICT,
             detail="보유 중인 코인이 남아 있는 그리드 전략은 설정을 바꿀 수 없습니다. 전략을 삭제한 뒤 다시 만들어주세요.",
+        )
+    except SlotStateInconsistentError:
+        raise HTTPException(
+            status_code=http_status.HTTP_409_CONFLICT,
+            detail=(
+                "자동매매 진행 상태가 체결 기록과 맞지 않아 전략을 켤 수 없습니다. "
+                "보유 현황을 확인한 뒤 전략을 삭제하고 다시 만들어주세요."
+            ),
         )
     except InvalidSlotInputError:
         raise HTTPException(status_code=http_status.HTTP_400_BAD_REQUEST, detail="올바르게 입력해주세요.")

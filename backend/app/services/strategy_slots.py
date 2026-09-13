@@ -17,7 +17,7 @@ from app.services import candles as candles_service
 from app.services import slot_state
 from app.services.orders import get_available_krw
 from app.services.wallet import get_withdrawable_krw
-from app.strategy_engine import runner
+from app.strategy_engine import reconcile, runner
 from app.strategy_engine.signals import Signal
 
 _INDICATOR_STRATEGY_TYPES = ("trend", "counter_trend")
@@ -51,6 +51,14 @@ class InsufficientBalanceError(Exception):
 
 class InsufficientAllocatableBalanceError(Exception):
     """슬롯 활성화(ON) 시 투자금이 출금 가능액을 초과하는 경우 (07 2.1절)."""
+
+
+class SlotStateInconsistentError(Exception):
+    """그리드 라인·DCA 진행 상태가 체결 기록으로 설명되지 않는다 (확장판 7단계).
+
+    이 상태로 자동매매를 켜면 이미 산 몫을 또 사거나 없는 수량을 팔려 한다. 추측으로 자금을
+    움직이지 않는다는 원칙에 따라 ON을 거부한다.
+    """
 
 
 class DuplicateActiveSlotError(Exception):
@@ -264,6 +272,18 @@ def toggle_slot(db: Session, user_id: int, slot_id: int, is_active: bool) -> Str
 
     # 검증을 통과한 뒤에 보정한다 — ON이 거부되면 상태를 건드리지 않고 그대로 둔다.
     _reconcile_phantom_position(db, slot)
+
+    # 그리드 라인·DCA 진행 상태도 체결 기록과 맞는지 본다 (확장판 7단계,
+    # docs-scale/03-worker-orchestration.md 2.4절). 워커는 **샤드를 새로 점유할 때만**
+    # 재조정하므로, 재조정이 OFF시킨 슬롯을 사용자가 그대로 다시 켜면 다음 점유 때까지 못
+    # 미더운 상태 위에서 거래가 재개된다. ON이 그 구멍을 닫는 자리다.
+    report = reconcile.ReconcileReport()
+    reconcile.reconcile_in_session(db, slot, report)
+    if report.disabled:
+        # 재조정이 설명하지 못한 상태다. 켜지 않고 사용자에게 돌려준다 — 추측으로 자금을
+        # 움직이지 않는다.
+        db.rollback()
+        raise SlotStateInconsistentError()
 
     slot.is_active = True
     db.commit()
