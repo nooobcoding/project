@@ -9,6 +9,7 @@ docker-compose의 개발용 postgres에 붙는다 — DB가 없으면 해당 테
 없어 명시적으로 정리한다.
 """
 
+import os
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -21,6 +22,9 @@ from app.models import Balance, Coin, StrategySlot, User
 
 TEST_COIN_SYMBOL = "ZZTEST"
 
+# DB 없이 돌리는 것을 **명시적으로** 허용하는 스위치. 기본값은 꺼짐이다.
+ALLOW_SKIP_ENV = "ALLOW_SKIP_DB_TESTS"
+
 
 def _database_available() -> bool:
     try:
@@ -31,10 +35,50 @@ def _database_available() -> bool:
         return False
 
 
-requires_db = pytest.mark.skipif(
-    not _database_available(),
-    reason="개발용 postgres가 필요하다 (docker compose up -d postgres)",
-)
+_DB_AVAILABLE = _database_available()
+
+# DB가 없을 때 무엇을 할지가 이 파일에서 가장 중요한 결정이다.
+#
+# 예전에는 무조건 skip이었다. 그런데 DB 연동 테스트가 전체의 2/3라, postgres를 안 띄우고
+# 돌리면 **3분의 2가 조용히 빠지고 결과는 "passed"로 보인다.** 자금 경로 테스트가 전부 그
+# 안에 있으므로, 그 상태의 초록불은 아무것도 보장하지 않으면서 보장하는 것처럼 보인다 —
+# 조용한 실패 금지 규칙이 테스트 스위트 자신에게도 적용돼야 한다.
+#
+# 그래서 기본값을 **실패**로 바꾼다. DB 없이 순수 함수만 빠르게 돌리고 싶을 때는
+# `ALLOW_SKIP_DB_TESTS=1`로 의도를 밝히면 된다.
+_SKIP_ALLOWED = os.getenv(ALLOW_SKIP_ENV, "").lower() in ("1", "true", "yes")
+
+if _DB_AVAILABLE or not _SKIP_ALLOWED:
+    # DB가 있으면 그냥 돈다. 없는데 건너뛰기도 허용 안 됐으면 아래 훅이 세션을 중단시키므로
+    # 여기서는 마커만 달아 둔다 (`-m db`로 골라 돌릴 수도 있다).
+    requires_db = pytest.mark.db
+else:
+    requires_db = pytest.mark.skipif(
+        True,
+        reason=f"postgres 없음 — {ALLOW_SKIP_ENV}로 건너뛰기를 명시적으로 허용했다",
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    """DB가 필요한 테스트를 수집했는데 DB가 없으면 **세션을 중단한다.**
+
+    조용히 skip하지 않는 이유가 이 파일의 핵심이다 — 위 주석 참고. 다만 순수 함수 테스트만
+    돌리는 경우(`pytest tests/test_grid.py`)는 DB가 필요 없으므로, **DB 연동 테스트가 실제로
+    수집됐을 때만** 막는다.
+    """
+    if _DB_AVAILABLE or _SKIP_ALLOWED:
+        return
+
+    db_items = [item for item in items if item.get_closest_marker("db")]
+    if not db_items:
+        return
+
+    raise pytest.UsageError(
+        f"DB 연동 테스트 {len(db_items)}개를 수집했지만 개발용 postgres에 붙을 수 없다.\n"
+        "  `docker compose up -d postgres`로 띄우거나,\n"
+        f"  의도적으로 건너뛰려면 {ALLOW_SKIP_ENV}=1 을 지정할 것.\n"
+        "  (그냥 skip하면 자금 경로 테스트가 통째로 빠진 채 초록불이 된다)"
+    )
 
 
 @pytest.fixture
