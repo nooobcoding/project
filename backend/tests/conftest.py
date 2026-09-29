@@ -109,38 +109,83 @@ def test_coin():
 
 
 @pytest.fixture
-def test_user(test_coin):
-    """시드머니를 가진 임시 유저. 종료 시 이 유저가 만든 모든 행을 지운다."""
-    email = f"worker-test-{uuid.uuid4().hex[:12]}@example.com"
-    with session_scope() as db:
-        user = User(email=email, password_hash="x", created_at=datetime.now(timezone.utc))
-        db.add(user)
-        db.flush()
-        user_id = user.id
-        db.add(
-            Balance(
-                user_id=user_id,
-                krw_balance=Decimal("10000000"),
-                updated_at=datetime.now(timezone.utc),
-            )
-        )
+def make_user(test_coin):
+    """시드머니를 가진 임시 유저를 만드는 팩토리. 만든 유저는 전부 종료 시 지운다.
 
-    yield user_id
+    IDOR 검증처럼 **서로 다른 두 유저**가 필요한 테스트가 있어서 팩토리로 둔다 — 정리
+    목록(FK 순서)을 한 곳에만 두기 위해 `test_user`도 이 팩토리를 쓴다.
+    """
+    created: list[int] = []
+
+    def _make(password_hash: str = "x") -> int:
+        email = f"worker-test-{uuid.uuid4().hex[:12]}@example.com"
+        with session_scope() as db:
+            user = User(
+                email=email, password_hash=password_hash, created_at=datetime.now(timezone.utc)
+            )
+            db.add(user)
+            db.flush()
+            user_id = user.id
+            db.add(
+                Balance(
+                    user_id=user_id,
+                    krw_balance=Decimal("10000000"),
+                    updated_at=datetime.now(timezone.utc),
+                )
+            )
+        created.append(user_id)
+        return user_id
+
+    yield _make
 
     # FK 의존 순서대로 정리한다 — orders.strategy_slot_id가 strategy_slots를 참조하므로
     # 슬롯보다 주문을 먼저 지워야 한다. backtest_trades는 backtest_results를 ON DELETE CASCADE로
     # 참조하므로 따로 지우지 않아도 함께 사라진다.
     with session_scope() as db:
-        for table in (
-            "notifications",
-            "orders",
-            "holdings",
-            "strategy_slots",
-            "backtest_results",
-            "balances",
-        ):
-            db.execute(text(f"DELETE FROM {table} WHERE user_id = :user_id"), {"user_id": user_id})
-        db.execute(text("DELETE FROM users WHERE id = :user_id"), {"user_id": user_id})
+        for user_id in created:
+            for table in (
+                "notifications",
+                "orders",
+                "holdings",
+                "strategy_slots",
+                "backtest_results",
+                "balances",
+                "watchlists",
+                "notification_settings",
+            ):
+                db.execute(
+                    text(f"DELETE FROM {table} WHERE user_id = :user_id"), {"user_id": user_id}
+                )
+            db.execute(text("DELETE FROM users WHERE id = :user_id"), {"user_id": user_id})
+
+
+@pytest.fixture
+def test_user(make_user):
+    """시드머니를 가진 임시 유저 하나."""
+    return make_user()
+
+
+@pytest.fixture
+def client():
+    """FastAPI 테스트 클라이언트.
+
+    `with` 없이 만든다 — 컨텍스트 매니저로 쓰면 lifespan이 돌면서 시세 스트림·스케줄러·
+    워커가 실제로 뜬다. 라우터 계약만 보는 테스트에 그 백그라운드 스레드는 불필요하고,
+    개발 DB를 건드리는 부작용까지 따라온다.
+    """
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    return TestClient(app)
+
+
+@pytest.fixture
+def auth_headers(test_user):
+    """`test_user`로 인증된 요청 헤더."""
+    from app.services.auth import create_access_token
+
+    return {"Authorization": f"Bearer {create_access_token(test_user)}"}
 
 
 @pytest.fixture
