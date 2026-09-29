@@ -19,6 +19,7 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import select
 
+from app.config import settings
 from app.database import session_scope
 from app.models import Order, StrategySlot
 from app.services import slot_state
@@ -91,6 +92,26 @@ def _shard_of(user_id: int) -> int:
     from app.services import sharding
 
     return sharding.shard_of_user(user_id)
+
+
+def _shard_without_active_slots(*, exclude: set[int]) -> int | None:
+    """활성 슬롯이 하나도 없는 샤드 하나.
+
+    `(my_shard + 1)`처럼 고정으로 고르면 안 된다 — 개발 DB에는 이 테스트와 무관한 활성
+    슬롯이 남아 있어서, 하필 그 샤드를 고르면 "남의 샤드"가 비어 있지 않다
+    (test_worker_sharding_db.py의 동명 헬퍼와 동일한 이유).
+    """
+    with session_scope() as db:
+        busy = {
+            int(shard)
+            for shard in db.scalars(
+                select(StrategySlot.user_id % settings.shard_count)
+                .where(StrategySlot.is_active)
+                .distinct()
+            )
+        }
+    free = set(range(settings.shard_count)) - busy - exclude
+    return min(free) if free else None
 
 
 # --- 그리드 --------------------------------------------------------------
@@ -206,8 +227,10 @@ def test_grid_reconcile_skips_slots_in_other_shards(make_slot, test_user, test_c
         },
     )
 
-    other_shard = {(_shard_of(test_user) + 1) % _shard_count()}
-    report = reconcile.reconcile_shards(other_shard)
+    idle_shard = _shard_without_active_slots(exclude={_shard_of(test_user)})
+    if idle_shard is None:
+        pytest.skip("모든 샤드에 활성 슬롯이 있다 (개발 DB 상태)")
+    report = reconcile.reconcile_shards({idle_shard})
 
     assert report.checked == 0
     with session_scope() as db:
