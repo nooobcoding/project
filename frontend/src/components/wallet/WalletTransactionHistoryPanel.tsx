@@ -1,3 +1,4 @@
+import { INVERTED_DATE_RANGE_MESSAGE, isDateRangeInverted } from "../../hooks/useWalletTransactions";
 import type { Transaction, TransactionType } from "../../types/wallet";
 
 interface WalletTransactionHistoryPanelProps {
@@ -70,6 +71,7 @@ export function WalletTransactionHistoryPanel({
             type="date"
             className="wallet-date-input"
             value={startDate}
+            max={endDate || undefined}
             onChange={(event) => onStartDateChange(event.target.value)}
           />
           <span>~</span>
@@ -77,9 +79,14 @@ export function WalletTransactionHistoryPanel({
             type="date"
             className="wallet-date-input"
             value={endDate}
+            min={startDate || undefined}
             onChange={(event) => onEndDateChange(event.target.value)}
           />
         </div>
+        {/* min/max를 뚫고 들어온 경우(직접 타이핑 등)의 안전망 — 백테스트 설정 패널과 같은 방식 */}
+        {isDateRangeInverted(startDate, endDate) && (
+          <p className="auth-error-message">{INVERTED_DATE_RANGE_MESSAGE}</p>
+        )}
       </div>
 
       {items.length === 0 ? (
