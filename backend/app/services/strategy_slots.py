@@ -246,7 +246,7 @@ def toggle_slot(db: Session, user_id: int, slot_id: int, is_active: bool) -> Str
     slot = _get_owned_slot(db, user_id, slot_id)
 
     if not is_active:
-        slot.is_active = False
+        deactivate_in_session(slot)
         db.commit()
         db.refresh(slot)
         return slot
@@ -289,6 +289,16 @@ def toggle_slot(db: Session, user_id: int, slot_id: int, is_active: bool) -> Str
     db.commit()
     db.refresh(slot)
     return slot
+
+
+def deactivate_in_session(slot: StrategySlot) -> None:
+    """슬롯 OFF의 유일한 구현. 커밋은 호출자가 한다.
+
+    사용자 OFF(`toggle_slot`), 관리자 강제 OFF, 계정 정지가 모두 이 함수를 쓴다 — 관리자
+    경로가 따로 OFF를 구현하면 `state` 처리 규칙이 갈라진다 (확장판 05-admin.md 3-C).
+    OFF는 `is_active`만 내리고 `state.position`은 유지한다 (07 4.2절, 재ON 시 이어서 관리).
+    """
+    slot.is_active = False
 
 
 def delete_slot(db: Session, user_id: int, slot_id: int) -> SlotDeletionResult:

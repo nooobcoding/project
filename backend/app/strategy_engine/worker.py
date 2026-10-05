@@ -55,6 +55,7 @@ from app.services import notifications as notifications_service
 from app.services import price_cache, slot_state
 from app.strategy_engine import reconcile
 from app.services.orders import (
+    AccountSuspendedError,
     InsufficientBalanceError,
     InsufficientHoldingError,
     create_order,
@@ -80,6 +81,9 @@ SKIP_NO_CANDLES = "candles"
 SKIP_NO_PRICE = "price"
 SKIP_INSUFFICIENT_BALANCE = "balance"
 SKIP_INSUFFICIENT_HOLDING = "holding"
+# 이 tick이 슬롯을 읽은 직후 계정이 정지됐다. 정지가 슬롯을 OFF했으므로 다음 tick부터는
+# 평가 대상에서 빠진다 — 오류가 아니라 정상적인 경합 결과다.
+SKIP_ACCOUNT_SUSPENDED = "suspended"
 
 # 이 프로세스가 점유한 워커 샤드. tick마다 갱신하며, 이전 tick 대비 **새로 잡은** 샤드가
 # 재조정 대상이다 (03-worker-orchestration.md 2.4절).
@@ -589,6 +593,9 @@ def _place_buy(slot: _SlotSnapshot, amount: Decimal) -> tuple[Decimal, Decimal] 
             f"[{_korean_name(slot.coin_symbol)}] 매수 신호가 발생했으나 가용 잔고 부족으로 스킵되었습니다.",
         )
         return None
+    except AccountSuspendedError:
+        _record_skip(SKIP_ACCOUNT_SUSPENDED, slot.id)
+        return None
 
 
 def _place_sell(slot: _SlotSnapshot, quantity: Decimal) -> Decimal:
@@ -620,6 +627,9 @@ def _place_sell(slot: _SlotSnapshot, quantity: Decimal) -> Decimal:
         # 가용 수량을 이미 상한으로 걸었으므로 정상 경로에서는 나오지 않는다. 그 사이 다른
         # 매도가 끼어든 경우이므로 이번 청산만 건너뛴다.
         _record_skip(SKIP_INSUFFICIENT_HOLDING, slot.id)
+        return Decimal(0)
+    except AccountSuspendedError:
+        _record_skip(SKIP_ACCOUNT_SUSPENDED, slot.id)
         return Decimal(0)
     return sellable
 

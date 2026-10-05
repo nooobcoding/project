@@ -11,9 +11,9 @@ from decimal import Decimal
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import AuditLog, Balance, Holding, StrategySlot, User
-from app.models.user import ROLE_ADMIN, ROLE_USER
-from app.services import orders, portfolio, strategy_slots, wallet
+from app.models import AuditLog, Balance, Holding, Order, StrategySlot, User
+from app.models.user import ROLE_ADMIN, ROLE_USER, STATUS_SUSPENDED
+from app.services import orders, pending_symbols, portfolio, strategy_slots, wallet
 
 
 class UserNotFoundError(Exception):
@@ -199,4 +199,107 @@ def get_user_detail(db: Session, user_id: int) -> dict:
         "pending_orders": orders.list_pending_orders(db, user_id),
         "recent_orders": orders.list_order_history(db, user_id, limit=RECENT_LIMIT),
         "recent_transactions": transactions,
+    }
+
+
+# ---------------------------------------------------------------- 3-B. 계정 정지·해제
+
+
+class CannotSuspendSelfError(Exception):
+    """본인 계정을 정지하려 했다."""
+
+
+class CannotSuspendAdminError(Exception):
+    """관리자 계정을 정지하려 했다 — 관리자끼리 서로 잠그는 사고를 원천 차단한다.
+
+    관리자를 멈춰야 하면 먼저 CLI로 권한을 회수한다(`scripts/set_admin.py --revoke`).
+    """
+
+
+def set_user_status(db: Session, actor: User, user_id: int, status: str) -> dict:
+    """계정을 정지하거나 해제한다 (05 3-B).
+
+    **정지는 트랜잭션 두 개로 나뉜다.** 한 트랜잭션으로 묶으면 체결과 교착한다.
+
+    1단계 — `balances` → `users` → `strategy_slots` 순으로 잠그고 status·슬롯 OFF·감사 로그를
+       커밋한다. `balances`를 먼저 잡는 이유: `create_order`가 같은 행을 잠근 **뒤에** status를
+       보므로, 정지 직전에 상태를 읽어 둔 요청(진행 중인 HTTP 요청, 정지 전 스냅샷으로 도는 워커
+       tick)도 이 커밋 이후에는 주문을 못 낸다. 여기서부터 새 주문은 생기지 않는다.
+    2단계 — 남은 pending 주문을 취소한다. 사용자 취소와 같은 `cancel_pending_in_session`이다.
+       체결은 `orders(선점) → balances` 순으로 잠그므로, 1단계처럼 `balances`를 쥔 채 주문 행을
+       기다리면 그 주문을 체결 중인 matcher와 서로를 기다린다. 2단계는 `balances`를 잡지 않아
+       사용자 취소와 똑같이 체결과 경합만 하고(둘 중 하나만 성공), 교착하지 않는다.
+
+    2단계가 실패해도 1단계는 유지된다(새 주문은 이미 막혔다). 같은 요청을 다시 보내면 이미 정지된
+    계정이라도 2단계를 다시 돌려 남은 주문을 마저 취소한다.
+
+    해제는 status만 되돌린다. 슬롯을 자동으로 다시 켜지 않는다 — 켜는 건 사용자 몫이다.
+    """
+    suspend = status == STATUS_SUSPENDED
+
+    # --- 1단계
+    db.execute(select(Balance).where(Balance.user_id == user_id).with_for_update())
+    user = db.execute(select(User).where(User.id == user_id).with_for_update()).scalar_one_or_none()
+    if user is None:
+        db.rollback()
+        raise UserNotFoundError()
+    if suspend and user.id == actor.id:
+        db.rollback()
+        raise CannotSuspendSelfError()
+    if suspend and user.role == ROLE_ADMIN:
+        db.rollback()
+        raise CannotSuspendAdminError()
+
+    changed = user.status != status
+    deactivated_slot_ids: list[int] = []
+    audit: AuditLog | None = None
+    if changed:
+        if suspend:
+            slots = db.scalars(
+                select(StrategySlot)
+                .where(StrategySlot.user_id == user_id, StrategySlot.is_active.is_(True))
+                .order_by(StrategySlot.id)
+                .with_for_update()
+            ).all()
+            for slot in slots:
+                strategy_slots.deactivate_in_session(slot)
+            deactivated_slot_ids = [slot.id for slot in slots]
+
+        before = user.status
+        user.status = status
+        audit = AuditLog(
+            actor_user_id=actor.id,
+            actor_email=actor.email,
+            action="user.suspend" if suspend else "user.unsuspend",
+            target_type="user",
+            target_id=user_id,
+            detail={"before": before, "after": status, "deactivated_slot_ids": deactivated_slot_ids}
+            if suspend
+            else {"before": before, "after": status},
+        )
+        db.add(audit)
+    db.commit()
+
+    # --- 2단계 (정지일 때만)
+    canceled: list[tuple[int, str]] = []
+    if suspend:
+        canceled = orders.cancel_pending_in_session(db, Order.user_id == user_id)
+        canceled_ids = [order_id for order_id, _ in canceled]
+        if audit is not None:
+            audit.detail = {**audit.detail, "canceled_order_ids": canceled_ids}
+        elif canceled:
+            # 이전 정지 요청의 2단계가 실패해 남았던 주문을 이번에 마저 치웠다.
+            record_audit(
+                db, actor, "user.suspend", "user", user_id,
+                {"before": status, "after": status, "canceled_order_ids": canceled_ids},
+            )
+        db.commit()
+        for symbol in {symbol for _, symbol in canceled}:
+            pending_symbols.discard_if_settled(symbol)
+
+    return {
+        "status": status,
+        "changed": changed,
+        "deactivated_slot_ids": deactivated_slot_ids,
+        "canceled_order_ids": [order_id for order_id, _ in canceled],
     }

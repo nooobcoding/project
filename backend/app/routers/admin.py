@@ -13,6 +13,7 @@ from fastapi import status as http_status
 from sqlalchemy.orm import Session
 
 from app.database import get_session
+from app.models import User
 from app.routers.orders import _to_response as order_response
 from app.routers.portfolio import _holding_item
 from app.routers.strategy_slots import _to_response as slot_response
@@ -21,6 +22,8 @@ from app.schemas.admin import (
     AdminUserDetailResponse,
     AdminUserItem,
     AdminUserListResponse,
+    AdminUserStatusRequest,
+    AdminUserStatusResponse,
     AdminUserSummary,
 )
 from app.services import admin as admin_service
@@ -90,3 +93,25 @@ def get_user(user_id: int, db: Session = Depends(get_session)) -> AdminUserDetai
         recent_orders=[order_response(order) for order in detail["recent_orders"]],
         recent_transactions=[transaction_response(tx) for tx in detail["recent_transactions"]],
     )
+
+
+@router.patch("/users/{user_id}/status", response_model=AdminUserStatusResponse)
+def patch_user_status(
+    user_id: int,
+    payload: AdminUserStatusRequest,
+    db: Session = Depends(get_session),
+    admin: User = Depends(require_admin),
+) -> AdminUserStatusResponse:
+    try:
+        result = admin_service.set_user_status(db, admin, user_id, payload.status)
+    except admin_service.UserNotFoundError:
+        raise HTTPException(status_code=http_status.HTTP_404_NOT_FOUND, detail=USER_NOT_FOUND)
+    except admin_service.CannotSuspendSelfError:
+        raise HTTPException(
+            status_code=http_status.HTTP_400_BAD_REQUEST, detail="본인 계정은 정지할 수 없습니다."
+        )
+    except admin_service.CannotSuspendAdminError:
+        raise HTTPException(
+            status_code=http_status.HTTP_400_BAD_REQUEST, detail="관리자 계정은 정지할 수 없습니다."
+        )
+    return AdminUserStatusResponse(**result)

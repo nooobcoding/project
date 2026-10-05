@@ -4,6 +4,7 @@
 """
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -49,3 +50,14 @@ class AdminUserDetailResponse(BaseModel):
     pending_orders: list[OrderResponse]
     recent_orders: list[OrderResponse]
     recent_transactions: list[TransactionResponse]
+
+
+class AdminUserStatusRequest(BaseModel):
+    status: Literal["active", "suspended"]
+
+
+class AdminUserStatusResponse(BaseModel):
+    status: str
+    changed: bool
+    deactivated_slot_ids: list[int]
+    canceled_order_ids: list[int]

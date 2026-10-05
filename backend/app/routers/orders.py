@@ -13,8 +13,9 @@ from app.schemas.decimal_input import (
     parse_optional_decimal,
 )
 from app.schemas.orders import OrderCreateRequest, OrderResponse
-from app.services.auth import get_current_user
+from app.services.auth import SUSPENDED_MESSAGE, get_current_user
 from app.services.orders import (
+    AccountSuspendedError,
     CoinLockedByAutoTradingError,
     CoinNotFoundError,
     InsufficientBalanceError,
@@ -104,6 +105,9 @@ def post_order(
             status_code=http_status.HTTP_409_CONFLICT,
             detail="자동매매가 실행 중인 코인입니다. 자동매매를 먼저 종료해주세요.",
         )
+    except AccountSuspendedError:
+        # 인증은 통과했는데 처리 도중 정지된 경우다 — 인증 단계와 같은 응답을 준다.
+        raise HTTPException(status_code=http_status.HTTP_403_FORBIDDEN, detail=SUSPENDED_MESSAGE)
     return _to_response(order)
 
 

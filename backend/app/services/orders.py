@@ -11,7 +11,8 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.constants import TRADING_FEE_RATE
-from app.models import Balance, Coin, Holding, Order, StrategySlot
+from app.models import Balance, Coin, Holding, Order, StrategySlot, User
+from app.models.user import STATUS_SUSPENDED
 from app.services import matcher, pending_symbols, price_cache
 
 
@@ -45,6 +46,10 @@ class OrderNotFoundError(Exception):
 
 class OrderNotCancelableError(Exception):
     """이미 체결·취소된 주문을 취소하려는 경우 (동시 체결과 경쟁해 패배한 경우 포함)."""
+
+
+class AccountSuspendedError(Exception):
+    """정지된 계정의 주문 — 정지 직전에 시작된 요청·워커 tick이 정지 뒤에 도착한 경우."""
 
 
 class CoinLockedByAutoTradingError(Exception):
@@ -162,6 +167,13 @@ def create_order(
     # 같은 트랜잭션으로 이어가므로 검증부터 체결까지 잠금이 끊기지 않는다.
     db.execute(select(Balance).where(Balance.user_id == user_id).with_for_update())
 
+    # 계정 정지(확장판 05-admin.md 3-B)도 같은 balances 행을 먼저 잠그고 status를 바꾼다. 그래서
+    # 이 검사를 잠금 **뒤에** 두면, 정지 전에 상태를 읽어 둔 요청(진행 중이던 HTTP 요청, 정지 직전
+    # 스냅샷으로 도는 워커 tick)도 정지가 커밋된 뒤에는 여기서 걸린다. 객체가 아니라 컬럼을 직접
+    # 읽는다 — 같은 세션이 인증 단계에서 User를 이미 읽어 두었다면 그 캐시된 값은 낡았다.
+    if db.scalar(select(User.status).where(User.id == user_id)) == STATUS_SUSPENDED:
+        raise AccountSuspendedError()
+
     if side == "sell":
         db.execute(
             select(Holding)
@@ -222,15 +234,33 @@ def cancel_order(db: Session, user_id: int, order_id: int) -> None:
     if order is None or order.user_id != user_id:
         raise OrderNotFoundError()
 
-    result = db.execute(
-        update(Order)
-        .where(Order.id == order_id, Order.status == "pending")
-        .values(status="canceled")
-    )
+    canceled = cancel_pending_in_session(db, Order.id == order_id)
     db.commit()
-    if result.rowcount == 0:
+    if not canceled:
         raise OrderNotCancelableError()
     pending_symbols.discard_if_settled(order.coin_symbol)
+
+
+def cancel_pending_in_session(db: Session, *conditions) -> list[tuple[int, str]]:
+    """조건에 맞는 pending 주문을 취소하고 `(id, coin_symbol)` 목록을 돌려준다. 커밋은 호출자가 한다.
+
+    체결 엔진과 같은 조건부 UPDATE(`WHERE status='pending'`)라 동시에 체결이 들어와도 둘 중
+    하나만 성공한다 (09-execution-engine.md 3.3절). 사용자 취소와 관리자 정지가 이 함수를
+    공유한다 — 취소 규칙이 두 갈래로 갈라지지 않게.
+
+    `balances`를 잠그지 않는다. 이미 동결 해제는 pending 주문이 사라지는 것만으로 일어나고
+    (가용 원화는 pending 주문에서 계산된다), 체결은 `orders → balances` 순서로 잠그므로 여기서
+    `balances`를 먼저 쥐고 주문 행을 기다리면 그 체결과 교착한다.
+
+    커밋 뒤에 `pending_symbols.discard_if_settled`를 부르는 것도 호출자 몫이다.
+    """
+    rows = db.execute(
+        update(Order)
+        .where(Order.status == "pending", *conditions)
+        .values(status="canceled")
+        .returning(Order.id, Order.coin_symbol)
+    ).all()
+    return [(row.id, row.coin_symbol) for row in rows]
 
 
 def list_pending_orders(db: Session, user_id: int) -> list[Order]:
