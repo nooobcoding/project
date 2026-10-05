@@ -85,10 +85,17 @@ def test_real_lock_lookup_runs(client, admin_headers):
 
 @pytest.fixture
 def heartbeat_rows():
-    process_id = f"admin-test-{uuid.uuid4().hex[:8]}"
+    """테스트용 heartbeat 행. 샤드 번호는 실제로 존재할 수 없는 900번대를 쓴다.
 
-    def _add(role: str, shard_id: int | None, seconds_ago: int) -> None:
+    테스트가 개발 DB를 공유하므로, 개발 서버가 떠 있으면 샤드 0~15에는 10초마다 갱신되는 진짜
+    행이 있다. 화면은 (역할, 샤드)마다 최신 행만 보여주므로 같은 샤드 번호를 쓰면 테스트 행이
+    진짜 행에 가려진다.
+    """
+    prefix = f"admin-test-{uuid.uuid4().hex[:8]}"
+
+    def _add(role: str, shard_id: int | None, seconds_ago: int, process: str = "a") -> str:
         now = datetime.now(timezone.utc)
+        process_id = f"{prefix}-{process}"
         with session_scope() as db:
             db.add(
                 WorkerHeartbeat(
@@ -106,10 +113,15 @@ def heartbeat_rows():
                     updated_at=now,
                 )
             )
+        return process_id
 
-    yield process_id, _add
+    yield prefix, _add
     with session_scope() as db:
-        db.execute(delete(WorkerHeartbeat).where(WorkerHeartbeat.process_id == process_id))
+        db.execute(delete(WorkerHeartbeat).where(WorkerHeartbeat.process_id.like(f"{prefix}-%")))
+
+
+def _mine(client, headers, prefix: str) -> list[dict]:
+    return [h for h in _system(client, headers)["heartbeats"] if h["process_id"].startswith(prefix)]
 
 
 def test_heartbeat_staleness_uses_each_roles_own_interval(client, admin_headers, heartbeat_rows):
@@ -118,18 +130,46 @@ def test_heartbeat_staleness_uses_each_roles_own_interval(client, admin_headers,
     worker는 10초, matcher는 30초 주기다. 같은 40초 경과라도 worker(한도 30초)는 멈춘 것이고
     matcher(한도 90초)는 정상이다. 숫자 하나로 정하면 둘 중 하나를 틀린다.
     """
-    process_id, add = heartbeat_rows
-    add("worker", 0, seconds_ago=5)
-    add("worker", 1, seconds_ago=40)
-    add("matcher", 0, seconds_ago=40)
+    prefix, add = heartbeat_rows
+    add("worker", 900, seconds_ago=5)
+    add("worker", 901, seconds_ago=40)
+    add("matcher", 900, seconds_ago=40)
 
-    rows = [h for h in _system(client, admin_headers)["heartbeats"] if h["process_id"] == process_id]
+    rows = _mine(client, admin_headers, prefix)
     stale = {(h["role"], h["shard_id"]): h["stale"] for h in rows}
 
-    assert stale == {("worker", 0): False, ("worker", 1): True, ("matcher", 0): False}
-    sample = next(h for h in rows if h["shard_id"] == 1 and h["role"] == "worker")
+    assert stale == {("worker", 900): False, ("worker", 901): True, ("matcher", 900): False}
+    sample = next(h for h in rows if h["shard_id"] == 901 and h["role"] == "worker")
     assert (sample["error_count"], sample["skip_count"], sample["db_connections"]) == (1, 4, 3)
     assert sample["seconds_since_tick"] >= 40
+
+
+def test_dead_process_rows_are_hidden_by_the_one_that_took_over(client, admin_headers, heartbeat_rows):
+    """heartbeat는 아무도 지우지 않아 재기동마다 행이 쌓인다 — 개발 DB에서 2,189행 중 현역이 17행이었고,
+    그대로 그리면 화면 높이가 86,000px였다. (역할, 샤드)마다 최신 행만 보여준다."""
+    prefix, add = heartbeat_rows
+    add("worker", 902, seconds_ago=3600, process="dead")
+    alive = add("worker", 902, seconds_ago=3, process="alive")
+
+    before = _system(client, admin_headers)
+    rows = [h for h in before["heartbeats"] if h["process_id"].startswith(prefix)]
+
+    assert [(h["process_id"], h["stale"]) for h in rows] == [(alive, False)]
+    assert before["superseded_heartbeat_rows"] >= 1
+
+
+def test_stuck_process_stays_visible_however_old(client, admin_headers, heartbeat_rows):
+    """락을 쥔 채 멈춘 프로세스는 아무도 샤드를 넘겨받지 못해 그 행이 계속 최신이다.
+
+    시간 창(예: 최근 10분)으로 걸렀다면 이 행은 10분 뒤 화면에서 사라진다 — 가장 보여야 할 때
+    사라지는 셈이다.
+    """
+    prefix, add = heartbeat_rows
+    stuck = add("worker", 903, seconds_ago=6 * 3600, process="stuck")
+
+    rows = _mine(client, admin_headers, prefix)
+
+    assert [(h["process_id"], h["stale"]) for h in rows] == [(stuck, True)]
 
 
 def test_counts(client, admin_headers, make_user, make_slot):

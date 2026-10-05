@@ -100,6 +100,7 @@ class SystemOverviewResponse(BaseModel):
     worker_coverage: ShardCoverage
     matcher_coverage: ShardCoverage
     heartbeats: list[HeartbeatItem]
+    superseded_heartbeat_rows: int  # 같은 역할·샤드의 더 최신 행에 가려진 과거 프로세스 행 수
     active_users: int
     suspended_users: int
     active_slots: int

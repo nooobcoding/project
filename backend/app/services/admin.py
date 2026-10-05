@@ -394,10 +394,22 @@ def get_system_overview(db: Session) -> dict:
     now = datetime.now(timezone.utc)
     intervals = _tick_intervals()
 
+    # (역할, 샤드)마다 **가장 최근 행 하나만** 보여준다. heartbeat는 지우는 주체가 없어서 재기동할
+    # 때마다 새 process_id로 행이 쌓인다(개발 DB에서 3주에 2,189행, 그중 현역은 17행이었다).
+    # 시간 창으로 거르면 안 된다 — 락을 쥔 채 멈춘 프로세스가 창 밖으로 밀려나 **보여야 할 행이
+    # 사라진다.** 최신 행 기준이면 둘이 갈린다: 죽은 프로세스는 샤드를 넘겨받은 새 프로세스의 행에
+    # 가려지고, 멈춘 프로세스는 락을 안 놓아 아무도 넘겨받지 못하므로 그 행이 계속 최신으로 남아
+    # stale로 보인다.
+    latest = (
+        select(WorkerHeartbeat)
+        .distinct(WorkerHeartbeat.role, WorkerHeartbeat.shard_id)
+        .order_by(WorkerHeartbeat.role, WorkerHeartbeat.shard_id, WorkerHeartbeat.last_tick_at.desc())
+    )
+    heartbeat_rows = db.scalars(latest).all()
+    total_heartbeat_rows = db.scalar(select(func.count()).select_from(WorkerHeartbeat)) or 0
+
     heartbeats = []
-    for row in db.scalars(
-        select(WorkerHeartbeat).order_by(WorkerHeartbeat.role, WorkerHeartbeat.shard_id, WorkerHeartbeat.process_id)
-    ):
+    for row in heartbeat_rows:
         interval = intervals.get(row.role, _FALLBACK_INTERVAL_SECONDS)
         age = (now - row.last_tick_at).total_seconds()
         heartbeats.append(
@@ -427,6 +439,7 @@ def get_system_overview(db: Session) -> dict:
             leader.MATCHER_SHARD_NAMESPACE, applicable=settings.price_cache_backend == "redis"
         ),
         "heartbeats": heartbeats,
+        "superseded_heartbeat_rows": total_heartbeat_rows - len(heartbeats),
         "active_users": user_counts.get(STATUS_ACTIVE, 0),
         "suspended_users": user_counts.get(STATUS_SUSPENDED, 0),
         "active_slots": db.scalar(
