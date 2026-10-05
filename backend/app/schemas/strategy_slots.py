@@ -12,25 +12,41 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 Interval = Literal["1m", "10m", "30m", "1h", "1d"]
 
 
-class MaTrendParams(BaseModel):
+class _ShortBelowLongMixin(BaseModel):
+    """단기 기간은 장기 기간보다 짧아야 한다.
+
+    뒤집으면 "에러 없이 돌지만 신호가 정반대"가 된다 — 같은 가격 흐름에서 정상 설정이 매수를
+    내는 봉에 뒤집힌 설정은 매도를 낸다. 자동매매에서는 팔아야 할 때 사는 슬롯이 만들어지고,
+    백테스트에서는 그럴듯해 보이는 틀린 결과가 나와 아무도 이상한 줄 모른다.
+
+    같은 기간(`==`)도 막는다 — 단기선과 장기선이 겹쳐 교차가 정의되지 않는다.
+    """
+
+    short_period: int = Field(gt=0)
+    long_period: int = Field(gt=0)
+
+    @model_validator(mode="after")
+    def validate_short_below_long(self) -> "_ShortBelowLongMixin":
+        if self.short_period >= self.long_period:
+            raise ValueError("단기 기간은 장기 기간보다 짧아야 합니다.")
+        return self
+
+
+class MaTrendParams(_ShortBelowLongMixin):
     """추세추종 × MA: 골든/데드크로스 (06-backtesting.md 2.2절)."""
 
     interval: Interval
-    short_period: int = Field(gt=0)
-    long_period: int = Field(gt=0)
 
 
-class MaCounterTrendParams(BaseModel):
+class MaCounterTrendParams(_ShortBelowLongMixin):
     """역추세 × MA: MA(long_period) 대비 이격도(%) (signals.py evaluate_counter_trend_ma)."""
 
     interval: Interval
-    short_period: int = Field(gt=0)
-    long_period: int = Field(gt=0)
     deviation_pct: float = Field(gt=0)
 
 
@@ -58,6 +74,14 @@ class MacdParams(BaseModel):
     short_period: int = Field(default=12, gt=0)
     long_period: int = Field(default=26, gt=0)
     signal_period: int = Field(default=9, gt=0)
+
+    # 기본값이 있어 한쪽만 보내는 요청이 가능하다 — 보낸 쪽과 기본값이 뒤집히는 경우도 막는다
+    # (예: short_period=30만 보내면 long 기본값 26보다 길다). MA와 같은 이유다.
+    @model_validator(mode="after")
+    def validate_short_below_long(self) -> "MacdParams":
+        if self.short_period >= self.long_period:
+            raise ValueError("단기 기간은 장기 기간보다 짧아야 합니다.")
+        return self
 
 
 class BollingerParams(BaseModel):
@@ -151,6 +175,20 @@ class StrategySlotWriteRequest(BaseModel):
     invest_amount: str
     stop_loss_pct: str | None = None
     take_profit_pct: str | None = None
+
+
+def params_error_message(error: ValidationError, default: str) -> str:
+    """검증 실패를 사용자에게 보일 한 줄로 만든다.
+
+    우리가 `model_validator`에서 직접 올린 `ValueError`(예: "단기 기간은 장기 기간보다 짧아야
+    합니다.")는 그 문구를 그대로 쓰고, 그 외(타입·범위 위반)는 `default`로 떨어진다. 안 그러면
+    모든 검증 실패가 "기준값은 0~100 사이의 값을 입력해주세요."로 나와서, 단기·장기를 뒤집은
+    사용자에게 엉뚱한 안내를 하게 된다.
+    """
+    for detail in error.errors():
+        if detail["type"] == "value_error":
+            return str(detail["ctx"]["error"])
+    return default
 
 
 def validate_params_for(strategy_type: str, indicator: str | None, params: dict) -> dict:

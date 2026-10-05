@@ -168,8 +168,13 @@ def save_result(
     **감수한 트레이드오프**: `/run`이 결과를 저장하지 않고 `/results`가 클라이언트에게 되받는
     구조라, 이론상 조작된 수치를 저장할 수 있다. 저장 시점에 다시 계산하면 백테스트를 두 번
     돌리는 비용이 들어, 개인용 모의투자 도구 범위에서 감수하기로 했다 (06 계획 문서).
-    코인 존재 여부만 방어적으로 확인한다.
+    코인 존재 여부와 기간의 앞뒤만 방어적으로 확인한다.
     """
+    if end_date < start_date:
+        # `/run`이 이미 막는 값이지만 저장은 클라이언트가 되돌려 보낸 값을 받는 별도 경로라
+        # 거기서 걸러지지 않는다. 역전된 기간이 저장되면 불러오기 목록에 의미 없는 행이 남는다.
+        raise InvalidDateRangeError()
+
     if db.get(Coin, coin_symbol) is None:
         raise candles_service.CoinNotFoundError()
 

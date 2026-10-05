@@ -16,6 +16,7 @@ from app.schemas.strategy_slots import (
     StrategySlotResponse,
     StrategySlotWriteRequest,
     validate_dca_budget,
+    params_error_message,
     validate_params_for,
 )
 from app.services.auth import get_current_user
@@ -75,8 +76,11 @@ def post_strategy_slot(
 ) -> StrategySlotResponse:
     try:
         validated_params = validate_params_for(payload.strategy_type, payload.indicator, payload.params)
-    except ValidationError:
-        raise HTTPException(status_code=http_status.HTTP_400_BAD_REQUEST, detail=_PARAM_VALIDATION_ERROR_DETAIL)
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=http_status.HTTP_400_BAD_REQUEST,
+            detail=params_error_message(exc, _PARAM_VALIDATION_ERROR_DETAIL),
+        )
     except KeyError:
         # 전략유형과 지표 조합이 아예 없는 경우 (예: 그리드인데 지표를 함께 보냄)
         raise HTTPException(status_code=http_status.HTTP_400_BAD_REQUEST, detail="올바르게 입력해주세요.")
@@ -139,9 +143,10 @@ def patch_strategy_slot(
                 )
             try:
                 validated_params = validate_params_for(payload.strategy_type, payload.indicator, payload.params)
-            except ValidationError:
+            except ValidationError as exc:
                 raise HTTPException(
-                    status_code=http_status.HTTP_400_BAD_REQUEST, detail=_PARAM_VALIDATION_ERROR_DETAIL
+                    status_code=http_status.HTTP_400_BAD_REQUEST,
+                    detail=params_error_message(exc, _PARAM_VALIDATION_ERROR_DETAIL),
                 )
             except KeyError:
                 # 전략유형과 지표 조합이 아예 없는 경우 (예: 그리드인데 지표를 함께 보냄)

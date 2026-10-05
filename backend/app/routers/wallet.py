@@ -109,6 +109,13 @@ def get_transactions(
             status_code=http_status.HTTP_400_BAD_REQUEST, detail="지원하지 않는 type 값입니다."
         )
 
+    # 뒤집힌 기간은 빈 목록(200)이 아니라 오류여야 한다 — 빈 목록은 "그 기간에 내역이 없다"로
+    # 읽혀서 사용자가 날짜를 거꾸로 골랐다는 사실을 알 길이 없다. 백테스트와 같은 문구를 쓴다.
+    if start is not None and end is not None and end < start:
+        raise HTTPException(
+            status_code=http_status.HTTP_400_BAD_REQUEST, detail="종료일은 시작일 이후로 설정해주세요."
+        )
+
     # 화면의 날짜 범위는 KST 기준 하루 단위이므로, 저장된 UTC created_at과 비교하려면
     # KST 자정 경계를 UTC로 변환해야 한다 (01-erd.md 3.3절 — 저장은 UTC, 표시는 KST).
     start_at = datetime.combine(start, time.min, tzinfo=_KST) if start is not None else None

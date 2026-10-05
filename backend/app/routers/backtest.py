@@ -20,7 +20,11 @@ from app.schemas.backtest import (
     BacktestTradeOut,
     EquityPointOut,
 )
-from app.schemas.strategy_slots import validate_dca_budget, validate_params_for
+from app.schemas.strategy_slots import (
+    params_error_message,
+    validate_dca_budget,
+    validate_params_for,
+)
 from app.services.auth import get_current_user
 from app.services.backtest import (
     BacktestResultNotFoundError,
@@ -67,9 +71,10 @@ def _validated_params(strategy_type: str, indicator: str | None, params: dict) -
     """07 라우터와 같은 방식으로 전략유형×지표 조합별 스키마에 맞춰 검증한다."""
     try:
         return validate_params_for(strategy_type, indicator, params)
-    except ValidationError:
+    except ValidationError as exc:
         raise HTTPException(
-            status_code=http_status.HTTP_400_BAD_REQUEST, detail=_PARAM_VALIDATION_ERROR_DETAIL
+            status_code=http_status.HTTP_400_BAD_REQUEST,
+            detail=params_error_message(exc, _PARAM_VALIDATION_ERROR_DETAIL),
         )
     except KeyError:
         # 전략유형과 지표 조합이 아예 없는 경우 (예: 그리드인데 지표를 함께 보냄)
@@ -220,6 +225,8 @@ def post_backtest_result(
             ],
             metrics=metrics,
         )
+    except InvalidDateRangeError:
+        raise HTTPException(status_code=http_status.HTTP_400_BAD_REQUEST, detail=_DATE_RANGE_DETAIL)
     except CoinNotFoundError:
         raise HTTPException(status_code=http_status.HTTP_404_NOT_FOUND, detail="존재하지 않는 코인입니다.")
 
