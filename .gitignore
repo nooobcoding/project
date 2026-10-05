@@ -17,3 +17,6 @@ vite.config.d.ts
 # Editor
 .vscode/
 .idea/
+
+# 부하 측정 작업 파일 (토큰·k6 결과)
+backend/scripts/load/.work/

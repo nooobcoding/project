@@ -42,10 +42,6 @@ x-backend-env: &backend-env
   DB_MAX_OVERFLOW: "5"
 
 services:
-  postgres:
-    # 기본 100은 프로세스를 나누면 금방 찬다. 실측 피크는 docs-scale/08-capacity.md
-    command: ["postgres", "-c", "max_connections=300"]
-
   # 단일 구성의 전 역할 backend는 끈다 — 같이 뜨면 샤드·리더를 먼저 다 쥔다
   backend:
     profiles: ["single"]

@@ -1,6 +1,10 @@
 services:
   postgres:
     image: postgres:16-alpine
+    # 기본 100은 여러 프로세스 구성(docker-compose.scale.yml)에서 금방 찬다. 그쪽 파일에만 두면
+    # 기본 파일만 쓰는 명령(test_matrix.sh의 `docker compose run`)이 설정이 다르다고 보고
+    # postgres를 **재생성**해 떠 있던 모든 프로세스의 커넥션을 끊는다 — 실제로 그랬다.
+    command: ["postgres", "-c", "max_connections=300"]
     environment:
       POSTGRES_USER: coin_autotrading
       POSTGRES_PASSWORD: coin_autotrading
