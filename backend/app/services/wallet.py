@@ -13,8 +13,12 @@ from app.models import Balance, DepositWithdrawal, StrategySlot
 from app.services.orders import get_available_krw
 
 
+# 문서의 오류 문구가 "(1원 이상)"이다. 0 이하만 막으면 0.5원 같은 값이 통과해 문구와 어긋난다.
+MIN_AMOUNT = Decimal(1)
+
+
 class InvalidAmountError(Exception):
-    """입출금 금액이 0 이하인 경우 (05-deposit-withdraw.md 3장)."""
+    """입출금 금액이 1원 미만인 경우 (05-deposit-withdraw.md 3장 — "올바른 금액을 입력해주세요. (1원 이상)")."""
 
 
 class InsufficientWithdrawableError(Exception):
@@ -53,7 +57,7 @@ def get_balance_summary(db: Session, user_id: int) -> tuple[Decimal, Decimal]:
 
 
 def deposit(db: Session, user_id: int, amount: Decimal, memo: str | None) -> DepositWithdrawal:
-    if amount <= 0:
+    if amount < MIN_AMOUNT:
         raise InvalidAmountError()
 
     # 동시 입출금·주문 생성과 경쟁하지 않도록 balances 행을 잠근다 (01-erd.md 3.1절 동시성 주의).
@@ -78,7 +82,7 @@ def deposit(db: Session, user_id: int, amount: Decimal, memo: str | None) -> Dep
 
 
 def withdraw(db: Session, user_id: int, amount: Decimal, memo: str | None) -> DepositWithdrawal:
-    if amount <= 0:
+    if amount < MIN_AMOUNT:
         raise InvalidAmountError()
 
     balance = db.execute(

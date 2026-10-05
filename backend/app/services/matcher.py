@@ -6,6 +6,7 @@
 (09-execution-engine.md 3.2절).
 """
 
+import logging
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -26,6 +27,8 @@ from app.models import (
 from app.services import notifications as notifications_service
 from app.services import pending_symbols, slot_state
 from app.strategy_engine import costs
+
+logger = logging.getLogger(__name__)
 
 # orders.fee NUMERIC(20,4) — 계산은 costs.py가 하고 컬럼 자릿수만 여기서 맞춘다.
 _FEE_STEP = Decimal("0.0001")
@@ -247,12 +250,30 @@ def _reserved_condition_met(trigger_direction: str, trigger_price: Decimal, curr
     return current_price <= trigger_price
 
 
-def _promote_reserved_orders(symbol: str, current_price: Decimal) -> None:
+class MatchingFailedError(Exception):
+    """한 심볼의 매칭에서 **일부** 주문이 실패했다. 나머지 주문은 정상 처리된 뒤에 올라온다.
+
+    호출부(matcher_runner·price_stream)가 이미 예외를 잡아 세고 로그를 남기므로, 실패를 여기서
+    삼키지 않고 이 예외로 올려 보내면 집계 경로를 바꾸지 않고도 "조용한 실패 금지"가 지켜진다.
+    """
+
+    def __init__(self, symbol: str, failed_order_ids: list[int]) -> None:
+        self.symbol = symbol
+        self.failed_order_ids = failed_order_ids
+        super().__init__(f"symbol={symbol} 실패 주문={failed_order_ids}")
+
+
+def _promote_reserved_orders(symbol: str, current_price: Decimal) -> list[int]:
     """감시가격에 도달한 예약가 주문을 지정가로 승격한다 (체결은 하지 않는다).
 
     이 함수가 끝난 뒤 run_matching_for_symbol의 기존 지정가 후보 조회가 이어지므로,
     같은 틱에서 승격과 체결이 순차적으로 함께 일어날 수 있다.
+
+    Returns:
+        처리 중 실패한 주문 id. 주문 하나의 실패가 같은 심볼의 다른 주문으로 번지지 않게
+        주문마다 격리한다 (`run_matching_for_symbol` 참고).
     """
+    failed: list[int] = []
     with session_scope() as db:
         candidates = [
             (order.id, order.trigger_direction, order.trigger_price)
@@ -266,16 +287,22 @@ def _promote_reserved_orders(symbol: str, current_price: Decimal) -> None:
         ]
 
     for order_id, trigger_direction, trigger_price in candidates:
-        if not _reserved_condition_met(trigger_direction, trigger_price, current_price):
-            continue
-        with session_scope() as db:
-            # 취소 요청과의 동시 경쟁을 방지하는 조건부 UPDATE — 체결의 조건부 UPDATE와 동일 패턴
-            # (09-execution-engine.md 3.1/3.3절).
-            db.execute(
-                update(Order)
-                .where(Order.id == order_id, Order.status == "pending", Order.order_type == "reserved")
-                .values(order_type="limit")
-            )
+        try:
+            if not _reserved_condition_met(trigger_direction, trigger_price, current_price):
+                continue
+            with session_scope() as db:
+                # 취소 요청과의 동시 경쟁을 방지하는 조건부 UPDATE — 체결의 조건부 UPDATE와 동일
+                # 패턴 (09-execution-engine.md 3.1/3.3절).
+                db.execute(
+                    update(Order)
+                    .where(Order.id == order_id, Order.status == "pending", Order.order_type == "reserved")
+                    .values(order_type="limit")
+                )
+        except Exception:
+            logger.exception("예약가 승격 실패 (order_id=%s, symbol=%s)", order_id, symbol)
+            failed.append(order_id)
+
+    return failed
 
 
 def run_matching_for_symbol(symbol: str, current_price: Decimal) -> None:
@@ -286,15 +313,18 @@ def run_matching_for_symbol(symbol: str, current_price: Decimal) -> None:
     **체결 절차 자체는 어느 쪽이든 동일하다** — 누가 부르느냐만 다르다
     (02-market-data.md 4.1절).
 
-    후보 조회와 개별 체결을 서로 다른 세션으로 분리해, 한 주문의 실패가 같은 틱에서
-    매칭된 다른 주문에 영향을 주지 않게 한다.
+    **주문 하나의 실패가 같은 심볼의 다른 주문으로 번지지 않는다.** 세션만 나누는 것으로는
+    부족했다 — 예외가 루프를 빠져나가면 뒤 순서의 주문은 아예 평가되지 않는다. 오염된 주문(감시
+    가격 NaN, 수량 0 등)은 롤백되어 pending으로 남으므로 매 틱 같은 자리에서 다시 터지고,
+    결과적으로 **그 코인을 거래하는 모든 유저의 체결이 영구히 멈췄다**(실측 재현). 그래서 주문마다
+    격리해 나머지를 끝까지 처리하고, 실패는 마지막에 `MatchingFailedError`로 올려 호출부가 센다.
     """
     if not pending_symbols.has_pending(symbol):
         # 미체결이 없는 심볼은 DB를 아예 안 본다 (02-market-data.md 4.2절). 힌트를 못 쓰는
         # 상황에서는 항상 True가 오므로 지금까지와 동일하게 동작한다.
         return
 
-    _promote_reserved_orders(symbol, current_price)
+    failed = _promote_reserved_orders(symbol, current_price)
 
     with session_scope() as db:
         # 이 세션은 with 블록을 벗어나며 커밋·종료되어 객체가 detach되므로(expire_on_commit
@@ -312,15 +342,22 @@ def run_matching_for_symbol(symbol: str, current_price: Decimal) -> None:
 
     filled_any = False
     for order_id, side, order_price in candidates:
-        if not _limit_condition_met(side, order_price, current_price):
-            continue
-        with session_scope() as db:
-            order = db.get(Order, order_id)
-            if order is None or order.status != "pending":
+        try:
+            if not _limit_condition_met(side, order_price, current_price):
                 continue
-            fill_order(db, order, fill_price=order.price)
-            filled_any = True
+            with session_scope() as db:
+                order = db.get(Order, order_id)
+                if order is None or order.status != "pending":
+                    continue
+                fill_order(db, order, fill_price=order.price)
+                filled_any = True
+        except Exception:
+            logger.exception("지정가 체결 실패 (order_id=%s, symbol=%s)", order_id, symbol)
+            failed.append(order_id)
 
     if filled_any:
         # 체결이 있었을 때만 확인한다 — 매 틱 확인하면 힌트로 아낀 DB 왕복이 도로 늘어난다.
         pending_symbols.discard_if_settled(symbol)
+
+    if failed:
+        raise MatchingFailedError(symbol, failed)

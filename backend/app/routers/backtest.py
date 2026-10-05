@@ -1,6 +1,6 @@
 """06-backtesting Boundary 계층 — /api/backtest/*. Control(services/backtest.py)만 호출한다."""
 
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi import status as http_status
@@ -20,9 +20,19 @@ from app.schemas.backtest import (
     BacktestTradeOut,
     EquityPointOut,
 )
+from app.schemas.decimal_input import (
+    COIN_PRICE,
+    COIN_QUANTITY,
+    KRW_AMOUNT,
+    PERCENT,
+    RATIO_METRIC,
+    InvalidDecimalInputError,
+    parse_optional_decimal,
+)
 from app.schemas.strategy_slots import (
     params_error_message,
     validate_dca_budget,
+    validate_exit_pcts,
     validate_params_for,
 )
 from app.services.auth import get_current_user
@@ -51,17 +61,34 @@ _INVALID_INPUT_DETAIL = "올바르게 입력해주세요."
 _DATE_RANGE_DETAIL = "종료일은 시작일 이후로 설정해주세요."
 
 
-def _parse_decimal(value: str | None) -> Decimal | None:
-    if value is None:
-        return None
+def _parse_decimal(value: str | None, column: dict[str, int]) -> Decimal | None:
+    """NaN·Infinity·컬럼 초과를 400으로 막고 저장될 자릿수로 내린다 (schemas/decimal_input.py)."""
     try:
-        return Decimal(value)
-    except InvalidOperation:
+        return parse_optional_decimal(value, **column)
+    except InvalidDecimalInputError:
         raise HTTPException(status_code=http_status.HTTP_400_BAD_REQUEST, detail=_INVALID_INPUT_DETAIL)
 
 
-def _require_decimal(value: str) -> Decimal:
-    parsed = _parse_decimal(value)
+def _validate_run_costs(initial_capital: Decimal, fee_rate: Decimal, slippage_rate: Decimal) -> None:
+    """초기 자본·수수료율·슬리피지율의 범위.
+
+    음수 수수료·슬리피지는 매매할수록 돈이 생기게 만들어 결과를 부풀린다(수수료 -1%로 실측한
+    최종자산이 1,754만 원). 저장까지 되므로 불러오기 목록에 그럴듯한 가짜 성과가 남는다.
+    100% 이상은 한 번 사는 데 원금 이상이 들어 의미가 없다.
+    """
+    if initial_capital <= 0:
+        raise HTTPException(
+            status_code=http_status.HTTP_400_BAD_REQUEST, detail="초기 투자금은 0보다 커야 합니다."
+        )
+    if not (0 <= fee_rate < 100) or not (0 <= slippage_rate < 100):
+        raise HTTPException(
+            status_code=http_status.HTTP_400_BAD_REQUEST,
+            detail="수수료율과 슬리피지율은 0 이상 100 미만이어야 합니다.",
+        )
+
+
+def _require_decimal(value: str, column: dict[str, int]) -> Decimal:
+    parsed = _parse_decimal(value, column)
     if parsed is None:
         raise HTTPException(status_code=http_status.HTTP_400_BAD_REQUEST, detail=_INVALID_INPUT_DETAIL)
     return parsed
@@ -103,9 +130,17 @@ def post_backtest_run(
     """백테스트를 동기 실행하고 결과만 돌려준다 (저장하지 않는다, 06-backtesting.md 6장)."""
     validated_params = _validated_params(payload.strategy_type, payload.indicator, payload.params)
 
-    initial_capital = _require_decimal(payload.initial_capital)
-    fee_rate = _require_decimal(payload.fee_rate)
-    slippage_rate = _require_decimal(payload.slippage_rate)
+    initial_capital = _require_decimal(payload.initial_capital, KRW_AMOUNT)
+    fee_rate = _require_decimal(payload.fee_rate, PERCENT)
+    slippage_rate = _require_decimal(payload.slippage_rate, PERCENT)
+    _validate_run_costs(initial_capital, fee_rate, slippage_rate)
+
+    stop_loss_pct = _parse_decimal(payload.stop_loss_pct, PERCENT)
+    take_profit_pct = _parse_decimal(payload.take_profit_pct, PERCENT)
+    try:
+        validate_exit_pcts(stop_loss_pct, take_profit_pct)
+    except ValueError as exc:
+        raise HTTPException(status_code=http_status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
     # 06-backtesting.md 2.4-1절 — "회당 매수금액 × 총 횟수"가 총 상한을 넘지 않아야 한다.
     # 백테스팅에서는 초기 투자금이 그 상한이다 (services/backtest.py의 invest_amount 주석 참고).
@@ -127,8 +162,8 @@ def post_backtest_run(
             initial_capital=initial_capital,
             fee_rate=fee_rate,
             slippage_rate=slippage_rate,
-            stop_loss_pct=_parse_decimal(payload.stop_loss_pct),
-            take_profit_pct=_parse_decimal(payload.take_profit_pct),
+            stop_loss_pct=stop_loss_pct,
+            take_profit_pct=take_profit_pct,
         )
     except (InvalidDateRangeError, InvalidCandleRangeError):
         raise HTTPException(status_code=http_status.HTTP_400_BAD_REQUEST, detail=_DATE_RANGE_DETAIL)
@@ -185,14 +220,21 @@ def post_backtest_result(
     if not label:
         raise HTTPException(status_code=http_status.HTTP_400_BAD_REQUEST, detail="라벨을 입력해주세요.")
 
+    # 저장은 클라이언트가 되돌려 보낸 값을 받는 별도 경로라 `/run`의 검증을 거치지 않는다 —
+    # 같은 범위 검증을 여기서도 한다 (날짜 역전을 저장 경로에서 따로 막은 것과 같은 이유).
+    initial_capital = _require_decimal(payload.initial_capital, KRW_AMOUNT)
+    fee_rate = _require_decimal(payload.fee_rate, PERCENT)
+    slippage_rate = _require_decimal(payload.slippage_rate, PERCENT)
+    _validate_run_costs(initial_capital, fee_rate, slippage_rate)
+
     metrics = BacktestMetrics(
-        total_return=_require_decimal(payload.metrics.total_return),
-        final_asset=_require_decimal(payload.metrics.final_asset),
+        total_return=_require_decimal(payload.metrics.total_return, RATIO_METRIC),
+        final_asset=_require_decimal(payload.metrics.final_asset, KRW_AMOUNT),
         trade_count=payload.metrics.trade_count,
-        win_rate=_require_decimal(payload.metrics.win_rate),
-        mdd=_require_decimal(payload.metrics.mdd),
-        sharpe_ratio=_require_decimal(payload.metrics.sharpe_ratio),
-        benchmark_return=_require_decimal(payload.metrics.benchmark_return),
+        win_rate=_require_decimal(payload.metrics.win_rate, PERCENT),
+        mdd=_require_decimal(payload.metrics.mdd, RATIO_METRIC),
+        sharpe_ratio=_require_decimal(payload.metrics.sharpe_ratio, RATIO_METRIC),
+        benchmark_return=_require_decimal(payload.metrics.benchmark_return, RATIO_METRIC),
     )
 
     try:
@@ -206,9 +248,9 @@ def post_backtest_result(
             params=payload.params,
             start_date=payload.start_date,
             end_date=payload.end_date,
-            initial_capital=_require_decimal(payload.initial_capital),
-            fee_rate=_require_decimal(payload.fee_rate),
-            slippage_rate=_require_decimal(payload.slippage_rate),
+            initial_capital=initial_capital,
+            fee_rate=fee_rate,
+            slippage_rate=slippage_rate,
             equity_curve=[
                 {"at": point.at.isoformat(), "asset": point.asset}
                 for point in payload.equity_curve
@@ -216,9 +258,9 @@ def post_backtest_result(
             trades=[
                 {
                     "side": trade.side,
-                    "price": _require_decimal(trade.price),
-                    "quantity": _require_decimal(trade.quantity),
-                    "profit": _parse_decimal(trade.profit),
+                    "price": _require_decimal(trade.price, COIN_PRICE),
+                    "quantity": _require_decimal(trade.quantity, COIN_QUANTITY),
+                    "profit": _parse_decimal(trade.profit, KRW_AMOUNT),
                     "executed_at": trade.executed_at,
                 }
                 for trade in payload.trades

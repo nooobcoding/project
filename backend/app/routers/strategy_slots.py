@@ -1,7 +1,7 @@
 """07-auto-trading Boundary 계층 — /api/strategy-slots/*. Control(services/strategy_slots.py)만 호출한다."""
 
 from datetime import datetime, timezone
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi import status as http_status
@@ -9,14 +9,21 @@ from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from app.database import get_session
+from app.schemas.decimal_input import (
+    KRW_AMOUNT,
+    PERCENT,
+    InvalidDecimalInputError,
+    parse_optional_decimal,
+)
 from app.schemas.strategy_slots import (
     SlotDeletionResponse,
     SlotSignalResponse,
     StrategySlotPatchRequest,
     StrategySlotResponse,
     StrategySlotWriteRequest,
-    validate_dca_budget,
     params_error_message,
+    validate_dca_budget,
+    validate_exit_pcts,
     validate_params_for,
 )
 from app.services.auth import get_current_user
@@ -59,13 +66,23 @@ def _to_response(slot) -> StrategySlotResponse:
     )
 
 
-def _parse_decimal(value: str | None) -> Decimal | None:
-    if value is None:
-        return None
+def _parse_decimal(value: str | None, column: dict[str, int]) -> Decimal | None:
+    """NaN·Infinity·컬럼 초과를 400으로 막고 저장될 자릿수로 내린다 (schemas/decimal_input.py)."""
     try:
-        return Decimal(value)
-    except InvalidOperation:
+        return parse_optional_decimal(value, **column)
+    except InvalidDecimalInputError:
         raise HTTPException(status_code=http_status.HTTP_400_BAD_REQUEST, detail="올바르게 입력해주세요.")
+
+
+def _parse_exit_pcts(stop_loss: str | None, take_profit: str | None) -> tuple[Decimal | None, Decimal | None]:
+    """손절·익절 비율을 파싱하고 범위를 확인한다 (`validate_exit_pcts` 참고)."""
+    stop_loss_pct = _parse_decimal(stop_loss, PERCENT)
+    take_profit_pct = _parse_decimal(take_profit, PERCENT)
+    try:
+        validate_exit_pcts(stop_loss_pct, take_profit_pct)
+    except ValueError as exc:
+        raise HTTPException(status_code=http_status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    return stop_loss_pct, take_profit_pct
 
 
 @router.post("", response_model=StrategySlotResponse, status_code=http_status.HTTP_201_CREATED)
@@ -85,9 +102,8 @@ def post_strategy_slot(
         # 전략유형과 지표 조합이 아예 없는 경우 (예: 그리드인데 지표를 함께 보냄)
         raise HTTPException(status_code=http_status.HTTP_400_BAD_REQUEST, detail="올바르게 입력해주세요.")
 
-    invest_amount = _parse_decimal(payload.invest_amount)
-    stop_loss_pct = _parse_decimal(payload.stop_loss_pct)
-    take_profit_pct = _parse_decimal(payload.take_profit_pct)
+    invest_amount = _parse_decimal(payload.invest_amount, KRW_AMOUNT)
+    stop_loss_pct, take_profit_pct = _parse_exit_pcts(payload.stop_loss_pct, payload.take_profit_pct)
 
     # 06-backtesting.md 2.4-1절 — "회당 매수금액 × 총 횟수"가 총 상한을 넘지 않아야 한다.
     # invest_amount를 함께 봐야 해서 params 스키마 안에서는 검증할 수 없다.
@@ -154,7 +170,10 @@ def patch_strategy_slot(
                     status_code=http_status.HTTP_400_BAD_REQUEST, detail="올바르게 입력해주세요."
                 )
 
-            invest_amount = _parse_decimal(payload.invest_amount)
+            invest_amount = _parse_decimal(payload.invest_amount, KRW_AMOUNT)
+            stop_loss_pct, take_profit_pct = _parse_exit_pcts(
+                payload.stop_loss_pct, payload.take_profit_pct
+            )
             if payload.strategy_type == "dca":
                 try:
                     validate_dca_budget(validated_params, invest_amount)
@@ -171,8 +190,8 @@ def patch_strategy_slot(
                 indicator=payload.indicator,
                 params=validated_params,
                 invest_amount=invest_amount,
-                stop_loss_pct=_parse_decimal(payload.stop_loss_pct),
-                take_profit_pct=_parse_decimal(payload.take_profit_pct),
+                stop_loss_pct=stop_loss_pct,
+                take_profit_pct=take_profit_pct,
             )
     except SlotNotFoundError:
         raise HTTPException(status_code=http_status.HTTP_404_NOT_FOUND, detail="존재하지 않는 전략입니다.")

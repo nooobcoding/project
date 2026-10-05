@@ -1,7 +1,7 @@
 """05-deposit-withdraw Boundary 계층 — /api/wallet/*. Control(services/wallet.py)만 호출한다."""
 
 from datetime import date, datetime, time, timedelta
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -9,6 +9,7 @@ from fastapi import status as http_status
 from sqlalchemy.orm import Session
 
 from app.database import get_session
+from app.schemas.decimal_input import KRW_AMOUNT, InvalidDecimalInputError, parse_decimal
 from app.schemas.wallet import (
     DepositRequest,
     TransactionListResponse,
@@ -44,8 +45,8 @@ def _to_response(transaction) -> TransactionResponse:
 
 def _parse_amount(raw: str) -> Decimal:
     try:
-        return Decimal(raw)
-    except InvalidOperation:
+        return parse_decimal(raw, **KRW_AMOUNT)
+    except InvalidDecimalInputError:
         raise HTTPException(status_code=http_status.HTTP_400_BAD_REQUEST, detail="올바른 금액을 입력해주세요. (1원 이상)")
 
 

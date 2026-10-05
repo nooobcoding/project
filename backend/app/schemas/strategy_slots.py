@@ -66,6 +66,15 @@ class RsiCounterTrendParams(BaseModel):
     oversold: float = Field(default=30, ge=0, le=100)
     overbought: float = Field(default=70, ge=0, le=100)
 
+    # 신호 로직은 "RSI ≤ 과매도면 매수"를 먼저 본다(signals.evaluate_counter_trend_rsi). 뒤집으면
+    # (과매도 70 / 과매수 30) RSI 70 이하 **전 구간이 매수**가 되어 관망 구간이 사라진다 —
+    # 실측에서 매수 신호가 51건 → 278건으로 늘었다. 같으면 경계값이 매수·매도 양쪽에 걸린다.
+    @model_validator(mode="after")
+    def validate_oversold_below_overbought(self) -> "RsiCounterTrendParams":
+        if self.oversold >= self.overbought:
+            raise ValueError("과매도 기준은 과매수 기준보다 작아야 합니다.")
+        return self
+
 
 class MacdParams(BaseModel):
     """MACD — 추세추종/역추세 공통 파라미터 구성 (신호 로직만 signals.py에서 갈라진다)."""
@@ -150,13 +159,36 @@ _PARAM_SCHEMAS: dict[tuple[str, str | None], type[BaseModel]] = {
 def validate_dca_budget(params: dict, invest_amount: Decimal) -> None:
     """"회당 매수금액 × 총 횟수"가 총 상한을 넘지 않는지 (06-backtesting.md 2.4-1절).
 
-    end_condition="budget"이면 invest_amount 자체가 소진 기준이라 횟수 제약이 없다.
+    end_condition="budget"이면 invest_amount 자체가 소진 기준이라 횟수 제약이 없다. 다만
+    **회당 금액 자체가 투자금보다 크면** 어느 종료 조건이든 한 번도 사지 못한다 — 엔진은
+    "지출 + 회당 금액 > 투자금"이면 종료로 보므로(dca.is_finished), 슬롯을 켜도 영원히 아무것도
+    안 하는 슬롯이 된다. 초과 지출은 없지만 사용자는 돌고 있다고 믿는다.
     """
+    if Decimal(str(params["amount_per_buy"])) > invest_amount:
+        raise ValueError("회당 매수금액이 투자금을 초과합니다.")
     if params.get("end_condition") != "count":
         return
     planned = Decimal(str(params["amount_per_buy"])) * Decimal(str(params["max_count"]))
     if planned > invest_amount:
         raise ValueError("회당 매수금액 × 총 횟수가 투자금을 초과합니다.")
+
+
+def validate_exit_pcts(stop_loss_pct: Decimal | None, take_profit_pct: Decimal | None) -> None:
+    """손절·익절 비율의 범위 (`strategy_engine/exits.py`는 둘 다 **양수 퍼센트**를 전제한다).
+
+    엔진은 `수익률 <= -손절`이면 손절, `수익률 >= 익절`이면 익절한다. 그래서:
+
+    - 손절 0 이하 / 익절 음수 → 매수 직후 수익률(수수료만큼 음수)이 바로 조건을 만족해 **다음
+      tick에 팔아버린다.** 신호마다 수수료만 내고 사고팔기를 반복한다 (워커로 실측 확인).
+    - 손절 100 이상 → 가격이 0 아래로 갈 수 없으니 영원히 발동하지 않는다. 사용자는 손절이
+      걸려 있다고 믿는다.
+
+    상한(999.999)은 컬럼 자릿수라 파싱 단계에서 이미 막힌다.
+    """
+    if stop_loss_pct is not None and not (0 < stop_loss_pct < 100):
+        raise ValueError("손절 기준은 0보다 크고 100보다 작은 값을 입력해주세요.")
+    if take_profit_pct is not None and take_profit_pct <= 0:
+        raise ValueError("익절 기준은 0보다 큰 값을 입력해주세요.")
 
 
 class StrategySlotWriteRequest(BaseModel):

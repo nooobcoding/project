@@ -1,12 +1,17 @@
 """03-manual-trading Boundary 계층 — /api/orders/*. Control(services/orders.py)만 호출한다."""
 
-from decimal import Decimal, InvalidOperation
-
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi import status as http_status
 from sqlalchemy.orm import Session
 
 from app.database import get_session
+from app.schemas.decimal_input import (
+    COIN_PRICE,
+    COIN_QUANTITY,
+    InvalidDecimalInputError,
+    parse_decimal,
+    parse_optional_decimal,
+)
 from app.schemas.orders import OrderCreateRequest, OrderResponse
 from app.services.auth import get_current_user
 from app.services.orders import (
@@ -53,11 +58,13 @@ def post_order(
     db: Session = Depends(get_session),
     current_user=Depends(get_current_user),
 ) -> OrderResponse:
+    # 저장될 자릿수로 내린 뒤에 검증한다 — 1e-9 수량이 검증은 통과하고 저장 시 0이 되면, 그 0수량
+    # 주문이 체결 단계에서 0으로 나누며 **그 코인의 매칭 전체를 멈춘다** (schemas/decimal_input.py).
     try:
-        quantity = Decimal(payload.quantity)
-        price = Decimal(payload.price) if payload.price is not None else None
-        trigger_price = Decimal(payload.trigger_price) if payload.trigger_price is not None else None
-    except InvalidOperation:
+        quantity = parse_decimal(payload.quantity, **COIN_QUANTITY)
+        price = parse_optional_decimal(payload.price, **COIN_PRICE)
+        trigger_price = parse_optional_decimal(payload.trigger_price, **COIN_PRICE)
+    except InvalidDecimalInputError:
         raise HTTPException(status_code=http_status.HTTP_400_BAD_REQUEST, detail="올바르게 입력해주세요.")
 
     try:
