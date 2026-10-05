@@ -18,6 +18,7 @@
 | [05-admin.md](05-admin.md) | 관리자 기능 |
 | [06-observability.md](06-observability.md) | 관측 — 조용한 실패를 없앤다 |
 | [07-roadmap.md](07-roadmap.md) | 단계별 진행 순서 (각 단계 독립 배포·롤백 가능) |
+| [08-capacity.md](08-capacity.md) | **실측 처리 한계** — 단일 vs 여러 프로세스, 측정하며 찾은 버그·병목 |
 
 **중요**: 이 문서 세트는 기존 `docs/`를 대체하지 않는다. 스키마의 단일 기준은 여전히 [`docs/01-erd.md`](../docs/01-erd.md)이고, 전략 규칙의 기준은 [`docs/features/06-backtesting.md`](../docs/features/06-backtesting.md) 2장이다. 여기서는 그 위에 얹히는 **실행 구조의 변경분**만 다룬다.
 
@@ -187,6 +188,8 @@ SELECT pg_try_advisory_lock(<namespace>, <role_id>);
 | | | | **합계** | **70** |
 
 기본 `max_connections=100` 안에 여유를 두고 들어간다. 값 자체는 [06](06-observability.md)의 실측으로 조정하되, **규칙은 하나다 — 프로세스를 늘리기 전에 이 표를 먼저 갱신한다.**
+
+> **실측 반영 (2026-10-05, [08](08-capacity.md) 4장)**: 이 표는 초안이다. 실제 구성(`docker-compose.scale.yml`)은 api 4 × (10+10), 나머지 역할 (3+5), `max_connections=300`이다. 입장 제한([`app/http_admission.py`](../../backend/app/http_admission.py))이 생긴 뒤로는 **api 풀 크기가 곧 api 동시 처리량**이라 줄이면 처리량이 같이 준다. 워커·matcher는 tick이 단일 스레드라 실측 피크가 1이었다.
 
 #### PgBouncer는 두지 않는다
 
