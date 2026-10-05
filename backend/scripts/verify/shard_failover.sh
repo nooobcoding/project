@@ -12,14 +12,14 @@
 #   없다). test_matrix.sh와 같은 이유로 bash다.
 #
 # 확인하는 것:
-#   1. 먼저 뜬 워커가 샤드를 **전부** 가져간다
-#   2. 나중에 뜬 워커는 빈 손으로 대기한다 (재균형은 점진적이다 — 이미 점유된 샤드는
-#      못 잡고, 죽은 프로세스가 놓아줄 때 비로소 집어간다)
-#   3. 먼저 뜬 쪽을 SIGKILL하면 세션이 끊기며 락이 풀리고
-#   4. 대기하던 쪽이 다음 tick 주기 안에 전부 넘겨받는다
+#   1. 혼자 뜬 워커가 샤드를 **전부** 가져간다
+#   2. 두 번째 워커가 뜨면 먼저 뜬 쪽이 초과분을 놓아 **반씩 나눠 갖는다** (공정 몫)
+#   3. 먼저 뜬 쪽을 SIGKILL하면 세션이 끊기며 샤드 락과 멤버 락이 함께 풀리고
+#   4. 남은 쪽의 몫이 커져 다음 tick 주기 안에 전부 넘겨받는다
 #
-#   2번은 직관과 다르지만 의도된 동작이다 (03-worker-orchestration.md 2.1절).
-#   "샤드가 반씩 갈린다"고 기대하면 이 스크립트가 멀쩡한 동작을 실패로 보고한다.
+#   2번은 예전에는 "먼저 뜬 쪽이 독식하고 나중 쪽은 대기"였고 이 스크립트도 그걸 고정했다.
+#   그러면 워커를 늘려도 처리량이 안 늘어 프로세스를 나누는 목적이 무너진다 — 그래서 바꿨다
+#   (leader.ShardLocks docstring).
 #
 # 사용법:
 #   docker compose up -d postgres
@@ -118,24 +118,27 @@ FIRST_PID=$(distinct_owners)
 [ "$(echo "$FIRST_PID" | wc -l)" -eq 1 ] || fail "점유자가 하나가 아니다: $FIRST_PID"
 echo "   pid $FIRST_PID → [$(shards_of "$FIRST_PID")]"
 
-echo "2) 나중에 뜬 워커는 빈 손으로 대기하는가"
+echo "2) 나중에 뜬 워커가 공정 몫을 받는가"
 start_worker "$NAME_B"
-# 최소 두 tick(10초 주기)을 줘서 "아직 못 잡은 것"이 아니라 "못 잡는 것"임을 확인한다.
-sleep 25
-HOLDERS_NOW=$(distinct_owners)
-[ "$(echo "$HOLDERS_NOW" | wc -l)" -eq 1 ] || fail "두 워커가 샤드를 나눠 가졌다 (설계는 선점자 독식이다): $HOLDERS_NOW"
-[ "$HOLDERS_NOW" = "$FIRST_PID" ] || fail "점유자가 바뀌었다: $FIRST_PID → $HOLDERS_NOW"
-echo "   두 번째 워커는 대기 중 (점유자 그대로 pid $FIRST_PID)"
+# 재균형은 두 주기에 걸친다: B가 참여자로 등록 → A가 다음 tick에 초과분을 놓음 → B가 그다음에 집음.
+wait_for "두 워커가 샤드를 나눠 갖지 않았다 (공정 몫이 동작하지 않는다)" 60 \
+    '[ "$(distinct_owners | wc -l)" -eq 2 ] && [ "$(total_shards)" = "'"$EXPECTED"'" ]'
+for pid in $(distinct_owners); do
+    count=$(shards_of "$pid" | wc -w)
+    [ "$count" -eq $(( SHARD_COUNT / 2 )) ] || fail "몫이 고르지 않다: pid $pid → $count개"
+    echo "   pid $pid → [$(shards_of "$pid")]"
+done
+FIRST_SHARDS=$(shards_of "$FIRST_PID")
 
 echo "3) 먼저 뜬 쪽을 SIGKILL (정리 코드가 돌 기회를 주지 않는다)"
 docker compose kill -s KILL "$NAME_A" >/dev/null 2>&1 || docker kill "$NAME_A" >/dev/null 2>&1
 KILLED_AT=$SECONDS
 
-echo "4) 대기하던 워커가 전부 넘겨받는가"
-wait_for "대기하던 워커가 샤드를 넘겨받지 못했다" "$SUCCESSION_TIMEOUT" \
-    '[ "$(total_shards)" = "'"$EXPECTED"'" ] && [ "$(distinct_owners)" != "'"$FIRST_PID"'" ]'
+echo "4) 남은 워커가 죽은 쪽 몫까지 전부 넘겨받는가"
+wait_for "남은 워커가 샤드를 넘겨받지 못했다" "$SUCCESSION_TIMEOUT" \
+    '[ "$(total_shards)" = "'"$EXPECTED"'" ] && [ "$(distinct_owners | wc -l)" -eq 1 ] && [ "$(distinct_owners)" != "'"$FIRST_PID"'" ]'
 
 NEW_PID=$(distinct_owners)
-echo "   승계 완료 — $(( SECONDS - KILLED_AT ))초 (pid $FIRST_PID → $NEW_PID)"
+echo "   승계 완료 — $(( SECONDS - KILLED_AT ))초 (pid $FIRST_PID 의 [$FIRST_SHARDS] → pid $NEW_PID)"
 echo
-echo "통과: 선점자가 독식했고, 그 프로세스가 죽자 대기하던 쪽이 전부 넘겨받았다"
+echo "통과: 두 워커가 샤드를 반씩 나눠 가졌고, 하나가 죽자 남은 쪽이 전부 넘겨받았다"

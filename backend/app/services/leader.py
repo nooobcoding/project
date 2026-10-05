@@ -17,6 +17,8 @@ SQLAlchemy 커넥션 풀이 커넥션을 반납·재활용하면 락이 풀리�
 """
 
 import logging
+import math
+import secrets
 import threading
 from functools import lru_cache
 
@@ -48,6 +50,11 @@ MATCHER_SHARD_NAMESPACE = 4002
 # 유저 샤드 점유용 (03-worker-orchestration.md 2.1절). matcher와 네임스페이스를 나누는 것이
 # 필수다 — 같이 쓰면 matcher가 쥔 샤드 번호를 worker가 못 잡는다.
 WORKER_SHARD_NAMESPACE = 4003
+
+# 샤드 점유 참여자 등록용 — 샤드 네임스페이스마다 이만큼 떨어진 곳에 둔다 (ShardLocks 공정 몫).
+# 4002 → 5002(matcher 참여자), 4003 → 5003(worker 참여자).
+MEMBER_NAMESPACE_OFFSET = 1000
+_MEMBER_ID_ATTEMPTS = 5
 
 
 @lru_cache
@@ -185,23 +192,28 @@ class LeaderLock:
 
 
 class ShardLocks:
-    """샤드 집합의 점유. 잡히는 샤드를 전부 가져가고, 못 잡은 것은 다음 주기에 다시 노린다.
+    """샤드 집합의 점유. **참여자끼리 샤드를 고르게 나눠 갖는다.**
 
     **커넥션은 하나뿐이다.** advisory lock은 세션 단위라 한 세션이 여러 개를 동시에 쥘 수
     있다 — 샤드마다 커넥션을 열면 `SHARD_COUNT`만큼 커넥션이 늘어나 커넥션 예산이 바로
     깨진다 (00-architecture.md 3.5절).
 
-    재균형은 "주기적으로 못 잡은 샤드를 다시 시도"하는 것뿐이다. 프로세스가 죽으면 세션이
-    끊기며 그 샤드들이 자동으로 풀리고, 살아 있는 프로세스가 다음 주기에 집어간다. 프로세스를
-    추가하면 이미 점유된 샤드는 못 잡으므로 자연히 남은 것만 가져간다
-    (03-worker-orchestration.md 2.1절).
+    **공정 몫** — 처음 구현은 "잡히는 샤드를 전부" 가져갔다. 그러면 먼저 뜬 프로세스가 16개를
+    다 쥐고 나중에 뜬 프로세스는 페일오버 대기만 하므로, **프로세스를 늘려도 처리량이 그대로**
+    였다. 프로세스를 나누는 목적 자체가 무너진다. 그래서 각 참여자가 멤버 락을 하나 더 쥐어
+    참여자 수를 세고, `ceil(SHARD_COUNT / 참여자 수)`를 넘는 몫은 놓는다.
+
+    멤버 락도 샤드 락과 같은 세션에 붙으므로 프로세스가 죽으면 함께 사라진다 — 참여자 수가
+    저절로 줄고, 남은 쪽의 몫이 커져 그 샤드를 다음 주기에 집어간다. 페일오버가 여전히 공짜다.
     """
 
     def __init__(self, namespace: int, shard_count: int, label: str) -> None:
         self.namespace = namespace
+        self.member_namespace = namespace + MEMBER_NAMESPACE_OFFSET
         self.shard_count = shard_count
         self.label = label
         self._owned: set[int] = set()
+        self._member_id: int | None = None
         self._connection = None
         self._guard = threading.Lock()
 
@@ -210,7 +222,15 @@ class ShardLocks:
         return set(self._owned)
 
     def refresh(self) -> set[int]:
-        """못 잡은 샤드를 다시 시도하고, 쥐고 있던 샤드의 소유를 재확인한다.
+        """소유를 재확인하고, 몫을 넘긴 샤드는 놓고, 몫까지 빈 샤드를 잡는다.
+
+        **놓는 것이 잡는 것보다 먼저다.** 같은 주기에 남이 놓은 걸 잡고 내 것을 놓는 순서면
+        참여자가 늘어나는 순간 모두가 잠깐 몫보다 많이 쥐었다가 놓기를 반복한다.
+
+        놓아도 안전한 이유는 호출 시점에 있다: 워커는 tick 맨 앞에서 부르고 tick이 겹치지
+        않으므로(`max_instances=1`) 그 순간 진행 중인 평가가 없다. 넘겨받는 쪽은 페일오버와
+        똑같이 점유 시 재조정을 거친다 (03-worker-orchestration.md 2.4절). matcher는 같은
+        샤드를 잠깐 둘이 봐도 조건부 UPDATE가 중복 체결을 막는다 (02-market-data.md 4.3절).
 
         DB가 흔들리면 전부 놓은 것으로 보고한다 — 소유를 확신할 수 없는 상태에서 계속
         일하는 것보다, 아무것도 점유하지 않은 상태로 떨어지고 다음 주기에 다시 잡는 편이
@@ -220,8 +240,26 @@ class ShardLocks:
             try:
                 if self._connection is None:
                     self._connection = _leader_engine().connect()
+                self._ensure_member()
                 self._owned = self._verify_owned()
+                share = self._fair_share()
+
+                excess = len(self._owned) - share
+                if excess > 0:
+                    # 번호가 큰 쪽부터 놓는다 — 어느 쪽이든 맞지만 정해 두면 로그로 따라가기 쉽다
+                    for shard_id in sorted(self._owned, reverse=True)[:excess]:
+                        self._connection.execute(
+                            text("SELECT pg_advisory_unlock(:namespace, :shard_id)"),
+                            {"namespace": self.namespace, "shard_id": shard_id},
+                        )
+                        self._owned.discard(shard_id)
+                    logger.info(
+                        "%s 샤드 %d개를 놓았다 — 공정 몫 %d개 초과", self.label, excess, share
+                    )
+
                 for shard_id in range(self.shard_count):
+                    if len(self._owned) >= share:
+                        break
                     if shard_id in self._owned:
                         continue
                     acquired = self._connection.execute(
@@ -235,6 +273,57 @@ class ShardLocks:
                 self._owned = set()
                 self._discard_connection()
             return set(self._owned)
+
+    def _ensure_member(self) -> None:
+        """참여자로 등록돼 있게 한다 — 이 세션이 멤버 락을 쥐고 있지 않으면 새로 잡는다.
+
+        멤버 id는 무작위다. 프로세스마다 고유하기만 하면 되는데, 프로세스 id나 호스트명은
+        컨테이너 재기동 때 그대로 돌아와 직전 세션과 부딪힐 수 있다. 부딪히면 다른 값으로 다시.
+        """
+        if self._member_id is not None and self._holds(self.member_namespace, self._member_id):
+            return
+        for _ in range(_MEMBER_ID_ATTEMPTS):
+            candidate = secrets.randbelow(2**31 - 1) + 1
+            acquired = self._connection.execute(
+                text("SELECT pg_try_advisory_lock(:namespace, :member_id)"),
+                {"namespace": self.member_namespace, "member_id": candidate},
+            ).scalar()
+            if acquired:
+                self._member_id = candidate
+                return
+        raise RuntimeError(f"{self.label} 멤버 락을 잡지 못했다")
+
+    def _holds(self, namespace: int, objid: int) -> bool:
+        return bool(
+            self._connection.execute(
+                text(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1 FROM pg_locks
+                        WHERE locktype = 'advisory' AND classid = :namespace AND objid = :objid
+                          AND objsubid = 2 AND pid = pg_backend_pid() AND granted
+                    )
+                    """
+                ),
+                {"namespace": namespace, "objid": objid},
+            ).scalar()
+        )
+
+    def _fair_share(self) -> int:
+        """이 참여자가 가질 샤드 수 = ceil(SHARD_COUNT / 살아 있는 참여자 수).
+
+        올림이라 몫의 합은 항상 SHARD_COUNT 이상이다 — 모두가 몫을 채우면 빈 샤드가 없다.
+        """
+        members = self._connection.execute(
+            text(
+                """
+                SELECT COUNT(*) FROM pg_locks
+                WHERE locktype = 'advisory' AND classid = :namespace AND objsubid = 2 AND granted
+                """
+            ),
+            {"namespace": self.member_namespace},
+        ).scalar()
+        return math.ceil(self.shard_count / max(int(members), 1))
 
     def _verify_owned(self) -> set[int]:
         """이 세션이 실제로 쥐고 있는 샤드를 DB에 되묻는다. 커넥션이 끊겼다 재연결되면
@@ -278,6 +367,8 @@ class ShardLocks:
             logger.warning("%s 샤드 락 커넥션 정리 실패", self.label)
         finally:
             self._connection = None
+            # 멤버 락도 그 세션에 붙어 있었으므로 함께 사라졌다
+            self._member_id = None
 
 
 def occupied_shards(namespace: int) -> set[int]:

@@ -21,6 +21,7 @@ import pytest
 from sqlalchemy import create_engine, text
 
 from app.config import settings
+from app.database import get_engine
 from app.services import leader
 from tests.conftest import requires_db
 
@@ -276,13 +277,60 @@ def test_shards_are_split_not_shared(shard_locks):
 
 
 @requires_db
-def test_first_claimant_takes_everything_and_later_one_waits(shard_locks):
-    """먼저 뜬 프로세스가 전부 가져가고, 나중에 뜬 쪽은 빈 손으로 시작한다 (재균형은 점진적)."""
-    first = shard_locks()
-    second = shard_locks()
+def test_a_late_joiner_gets_a_fair_share_within_two_cycles(shard_locks):
+    """나중에 뜬 프로세스도 몫을 받는다 — 이게 안 되면 프로세스를 늘려도 처리량이 그대로다.
 
-    assert first.refresh() == {0, 1, 2, 3}
-    assert second.refresh() == set()
+    예전에는 먼저 뜬 쪽이 전부 쥐고 나중 쪽은 페일오버 대기만 했고, 이 테스트 자리에는 그
+    동작을 "의도된 것"으로 고정한 테스트가 있었다. 재균형은 두 주기에 걸쳐 일어난다:
+    나중 쪽이 등록하면 먼저 쪽이 다음 주기에 초과분을 놓고, 나중 쪽이 그다음에 집는다.
+    """
+    first = shard_locks(shard_count=4)
+    second = shard_locks(shard_count=4)
+
+    assert first.refresh() == {0, 1, 2, 3}  # 혼자일 때는 전부
+    assert second.refresh() == set()  # 등록은 했지만 아직 빈 샤드가 없다
+
+    first_owned = first.refresh()  # 참여자 2 → 몫 2, 초과분을 놓는다
+    second_owned = second.refresh()
+
+    assert len(first_owned) == len(second_owned) == 2
+    assert first_owned | second_owned == {0, 1, 2, 3}
+    assert first_owned & second_owned == set()
+
+
+@requires_db
+def test_no_one_exceeds_the_ceiling_share_and_everything_is_covered(shard_locks):
+    """16개를 셋이 나누면 몫은 ceil(16/3)=6 — 6/6/4. 아무도 6을 넘지 않고 빈 샤드가 없어야 한다."""
+    members = [shard_locks(shard_count=16) for _ in range(3)]
+
+    for _ in range(3):  # 재균형이 수렴할 만큼 돌린다
+        owned = [locks.refresh() for locks in members]
+
+    assert all(len(shards) <= 6 for shards in owned), [len(s) for s in owned]
+    everything = [shard for shards in owned for shard in shards]
+    assert len(everything) == len(set(everything)), f"샤드가 중복 배정됐다: {owned}"
+    assert set(everything) == set(range(16)), f"빈 샤드가 있다: {owned}"
+
+
+@requires_db
+def test_a_crashed_members_share_goes_back_to_the_survivors(shard_locks):
+    """프로세스가 죽으면 세션째 사라진다 — 샤드 락과 멤버 락이 같이 풀려 남은 쪽 몫이 커진다.
+
+    `release_all`로 흉내 내지 않고 **세션을 강제로 끊는다** — 정리 코드가 돌 기회가 없는 진짜
+    죽음과 같은 조건이다.
+    """
+    survivor = shard_locks(shard_count=4)
+    doomed = shard_locks(shard_count=4)
+    for _ in range(2):
+        survivor.refresh()
+        doomed.refresh()
+    assert len(survivor.owned) == 2
+
+    doomed_pid = doomed._connection.execute(text("SELECT pg_backend_pid()")).scalar()
+    with get_engine().connect() as admin:
+        admin.execute(text("SELECT pg_terminate_backend(:pid)"), {"pid": doomed_pid})
+
+    assert survivor.refresh() == {0, 1, 2, 3}
 
 
 @requires_db
@@ -374,18 +422,29 @@ def test_owner_never_loses_a_shard_to_a_competitor_across_refreshes(shard_locks)
     드러난다.
     """
     owner = shard_locks(shard_count=4)
-    competitor = shard_locks(shard_count=4)
-
     assert owner.refresh() == {0, 1, 2, 3}
 
-    stolen: list[set[int]] = []
+    # 경쟁자는 **참여자로 등록하지 않은** 날것의 락 시도다. `ShardLocks`를 경쟁자로 쓰면 공정
+    # 몫 때문에 owner가 샤드를 일부러 넘겨주는데, 이 테스트가 보려는 건 그게 아니라 "세션이
+    # 바뀌는 틈으로 새는가"다.
+    raw = get_engine().connect()
+    stolen: list[int] = []
     stop = threading.Event()
 
     def _keep_trying() -> None:
         while not stop.is_set():
-            got = competitor.refresh()
-            if got:
-                stolen.append(got)
+            for shard_id in range(4):
+                got = raw.execute(
+                    text("SELECT pg_try_advisory_lock(:ns, :sid)"),
+                    {"ns": TEST_SHARD_NAMESPACE_A, "sid": shard_id},
+                ).scalar()
+                if got:
+                    stolen.append(shard_id)
+                    raw.execute(
+                        text("SELECT pg_advisory_unlock(:ns, :sid)"),
+                        {"ns": TEST_SHARD_NAMESPACE_A, "sid": shard_id},
+                    )
+            raw.commit()
 
     thief = threading.Thread(target=_keep_trying)
     thief.start()
@@ -395,6 +454,7 @@ def test_owner_never_loses_a_shard_to_a_competitor_across_refreshes(shard_locks)
     finally:
         stop.set()
         thief.join(timeout=10)
+        raw.close()
 
     assert stolen == [], f"경쟁자가 점유 중인 샤드를 가로챘다: {stolen}"
 
