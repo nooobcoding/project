@@ -1,6 +1,11 @@
 import { Navigate, Route, Routes } from "react-router-dom";
+import { AdminRoute } from "./components/AdminRoute";
 import { AuthProvider } from "./components/AuthProvider";
 import { ProtectedRoute } from "./components/ProtectedRoute";
+import { AdminAuditLogsPage } from "./pages/admin/AdminAuditLogsPage";
+import { AdminSystemPage } from "./pages/admin/AdminSystemPage";
+import { AdminUserDetailPage } from "./pages/admin/AdminUserDetailPage";
+import { AdminUsersPage } from "./pages/admin/AdminUsersPage";
 import { AutoTradingPage } from "./pages/AutoTradingPage";
 import { BacktestPage } from "./pages/BacktestPage";
 import { DashboardPage } from "./pages/DashboardPage";
@@ -25,6 +30,13 @@ function App() {
           <Route path="/portfolio" element={<PortfolioPage />} />
           <Route path="/deposit-withdraw" element={<DepositWithdrawPage />} />
           <Route path="/settings" element={<SettingsPage />} />
+          <Route element={<AdminRoute />}>
+            <Route path="/admin" element={<Navigate to="/admin/users" replace />} />
+            <Route path="/admin/users" element={<AdminUsersPage />} />
+            <Route path="/admin/users/:userId" element={<AdminUserDetailPage />} />
+            <Route path="/admin/system" element={<AdminSystemPage />} />
+            <Route path="/admin/audit-logs" element={<AdminAuditLogsPage />} />
+          </Route>
         </Route>
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes>

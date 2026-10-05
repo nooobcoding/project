@@ -14,6 +14,17 @@ export class ApiError extends Error {
   }
 }
 
+// 서버(services/auth.py SUSPENDED_MESSAGE)와 같은 문구. 정지는 기존 토큰에도 즉시 적용되므로
+// (확장판 05-admin.md 2.2절), 로그인한 채로 쓰던 화면의 아무 요청에서나 이 응답이 올 수 있다.
+export const SUSPENDED_MESSAGE = "정지된 계정입니다. 관리자에게 문의해주세요.";
+
+// apiFetch는 React 밖이라 로그아웃을 직접 못 한다 — AuthProvider가 처리기를 등록해 둔다.
+let suspendedHandler: (() => void) | null = null;
+
+export function setSuspendedHandler(handler: (() => void) | null): void {
+  suspendedHandler = handler;
+}
+
 interface ApiFetchOptions extends RequestInit {
   token?: string;
 }
@@ -36,7 +47,12 @@ export async function apiFetch<T>(path: string, options: ApiFetchOptions = {}): 
   }
 
   if (!response.ok) {
-    throw new ApiError(await extractErrorDetail(response), response.status);
+    const detail = await extractErrorDetail(response);
+    // 토큰을 실어 보낸 요청만 — 로그인 시도의 403은 폼이 메시지로 보여주면 된다.
+    if (response.status === 403 && detail === SUSPENDED_MESSAGE && token) {
+      suspendedHandler?.();
+    }
+    throw new ApiError(detail, response.status);
   }
 
   if (response.status === 204) {

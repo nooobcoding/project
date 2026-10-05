@@ -8,9 +8,10 @@ const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 interface LoginFormProps {
   onServerError: (message: string) => void;
+  onSubmitStart?: () => void;
 }
 
-export function LoginForm({ onServerError }: LoginFormProps) {
+export function LoginForm({ onServerError, onSubmitStart }: LoginFormProps) {
   const { login } = useAuth();
   const navigate = useNavigate();
 
@@ -36,6 +37,7 @@ export function LoginForm({ onServerError }: LoginFormProps) {
     }
 
     setPasswordError(undefined);
+    onSubmitStart?.();
     setIsSubmitting(true);
     try {
       await login(email, password, rememberMe);

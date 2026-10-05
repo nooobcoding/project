@@ -21,7 +21,7 @@ const NAV_ITEMS: NavItem[] = [
 ];
 
 export function Gnb() {
-  const { logout } = useAuth();
+  const { logout, role } = useAuth();
 
   return (
     <header className="gnb">
@@ -45,6 +45,15 @@ export function Gnb() {
       </nav>
       <div className="gnb-actions">
         <NotificationBell />
+        {/* 확장판 05-admin.md 2.3절 — 관리자에게만 노출. 노출 여부는 편의일 뿐 권한은 서버가 본다 */}
+        {role === "admin" && (
+          <NavLink
+            to="/admin"
+            className={({ isActive }) => (isActive ? "gnb-link is-active" : "gnb-link")}
+          >
+            관리자
+          </NavLink>
+        )}
         <NavLink
           to="/settings"
           className={({ isActive }) => (isActive ? "gnb-link is-active" : "gnb-link")}

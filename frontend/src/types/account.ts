@@ -2,6 +2,7 @@
 
 export interface Account {
   email: string;
+  role: "user" | "admin";
 }
 
 export interface PasswordChangeInput {

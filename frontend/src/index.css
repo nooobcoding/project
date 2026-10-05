@@ -2129,3 +2129,218 @@ body {
 .portfolio-monthly-item:first-child {
   border-top: none;
 }
+
+/* SCR-09 — 관리자 (docs-scale/05-admin.md) */
+
+.admin-page {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 32px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.admin-tabs {
+  display: flex;
+  gap: 8px;
+}
+
+.admin-tabs a {
+  text-decoration: none;
+}
+
+.admin-loading {
+  color: var(--text-muted);
+  font-size: 0.875rem;
+  padding: 32px 24px;
+}
+
+.admin-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.admin-filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 24px;
+  align-items: center;
+}
+
+.admin-search-form {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.admin-table-scroll {
+  overflow-x: auto;
+}
+
+.admin-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8125rem;
+}
+
+.admin-table th {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  font-weight: 500;
+  text-align: left;
+  padding: 8px;
+  white-space: nowrap;
+}
+
+.admin-table td {
+  padding: 10px 8px;
+  border-top: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.admin-table .is-numeric {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.admin-table tr.is-stale td {
+  background: rgba(229, 72, 77, 0.08);
+}
+
+.admin-link {
+  color: var(--text);
+  text-decoration: none;
+}
+
+.admin-link:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.admin-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.75rem;
+}
+
+.admin-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  vertical-align: middle;
+}
+
+.admin-badge.is-active {
+  background: rgba(29, 158, 117, 0.15);
+  color: var(--accent);
+}
+
+.admin-badge.is-suspended {
+  background: rgba(229, 72, 77, 0.15);
+  color: var(--error);
+}
+
+.admin-badge.is-admin {
+  background: rgba(59, 130, 246, 0.15);
+  color: var(--profit);
+}
+
+.admin-detail-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.admin-detail-email {
+  margin: 0 0 4px;
+  font-size: 1.125rem;
+}
+
+.admin-section-title {
+  margin: 0;
+  font-size: 0.9375rem;
+}
+
+.admin-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+}
+
+.admin-stat {
+  background: var(--bg);
+  border-radius: 8px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.admin-stat-label {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+.admin-stat-value {
+  font-size: 1.0625rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.admin-primary-button {
+  align-self: flex-start;
+  padding: 8px 16px;
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  color: #fff;
+  cursor: pointer;
+}
+
+.admin-primary-button:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.admin-primary-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* 샤드 커버리지 — 표 안에 섞지 않고 맨 위에 띄운다 (05 3-D) */
+.admin-banner {
+  border-radius: 12px;
+  padding: 14px 18px;
+  font-size: 0.875rem;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border: 1px solid var(--border);
+}
+
+.admin-banner.is-ok {
+  color: var(--accent);
+  background: rgba(29, 158, 117, 0.08);
+}
+
+.admin-banner.is-muted {
+  color: var(--text-muted);
+  background: var(--surface);
+}
+
+.admin-banner.is-warning {
+  color: #f5a524;
+  border-color: rgba(245, 165, 36, 0.5);
+  background: rgba(245, 165, 36, 0.08);
+}
+
+.admin-banner.is-danger {
+  color: var(--error);
+  border-color: var(--error);
+  background: rgba(229, 72, 77, 0.12);
+}
