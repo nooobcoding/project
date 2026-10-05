@@ -43,6 +43,12 @@ def calc_rsi(closes: pd.Series, period: int = 14) -> pd.Series:
     rsi = np.where((avg_gain == 0) & (avg_loss == 0), 50.0, rsi)
     rsi = np.where((avg_gain > 0) & (avg_loss == 0), 100.0, rsi)
     rsi = np.where((avg_gain == 0) & (avg_loss > 0), 0.0, rsi)
+
+    # 가격 변화가 `period`개 쌓이기 전에는 RSI가 정의되지 않는다 — calc_ma가 앞쪽을 NaN으로 두는
+    # 것과 같다. 가리지 않으면 변화 1개로 RSI가 0이나 100이 되어, 기본값(14)으로 돌린 백테스트가
+    # **두 번째 봉에서** 과매도 매수를 냈다(실측). 계산을 바꾸지 않고 결과만 가리므로 워밍업 이후의
+    # 값은 비트 단위로 그대로다 (`min_periods`로 하면 같은 효과지만 MACD와 방식을 맞춘다).
+    rsi[:period] = np.nan
     return pd.Series(rsi, index=closes.index)
 
 
@@ -59,6 +65,20 @@ def calc_macd(
     macd_line = ema_short - ema_long
     signal_line = macd_line.ewm(span=signal_period, adjust=False).mean()
     histogram = macd_line - signal_line
+
+    # 장기 EMA가 `long_period`봉, 시그널이 그 위에 `signal_period`봉을 더 데우기 전에는 정의되지
+    # 않는다 — 가리지 않으면 봉 2~3개로 만든 교차가 신호가 되어 백테스트 시작 직후에 거래가 났다.
+    #
+    # **`min_periods`가 아니라 결과를 가리는 이유**: `min_periods`를 걸면 시그널선 EMA의 시작점이
+    # 뒤로 밀려 워밍업 이후의 값까지 달라진다. 결과만 가리면 재귀식은 그대로라 이후 값이 동일하고,
+    # 바뀌는 것은 "워밍업 동안 신호 없음" 하나뿐이다.
+    macd_line = macd_line.copy()
+    macd_line.iloc[: long_period - 1] = np.nan
+    signal_ready = long_period + signal_period - 2
+    signal_line = signal_line.copy()
+    signal_line.iloc[:signal_ready] = np.nan
+    histogram = histogram.copy()
+    histogram.iloc[:signal_ready] = np.nan
     return macd_line, signal_line, histogram
 
 

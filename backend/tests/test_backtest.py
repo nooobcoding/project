@@ -355,3 +355,28 @@ def test_lookback_truncation_does_not_change_results(strategy_type, indicator, m
     assert [(t.side, t.executed_at, t.quantity) for t in truncated.trades] == [
         (t.side, t.executed_at, t.quantity) for t in full.trades
     ]
+
+
+def test_rsi_backtest_does_not_trade_during_indicator_warm_up():
+    """기본값 RSI 14로 돌린 백테스트가 시작 **두 번째 봉**에서 매수했다 (실측).
+
+    가격 변화 1개로 RSI가 0이 되어 과매도로 판정된 것이다 — 그 백테스트의 거래가 2건뿐이라 절반이
+    가짜 신호였다. 변화가 14개 쌓이기 전(index < 14)에는 RSI 신호로 거래하면 안 된다.
+    """
+    closes = [105, 100] + [100 + (i % 5) - 2 for i in range(60)]
+    run = backtest.run_backtest(
+        candles(*closes),
+        SlotSpec(
+            strategy_type="counter_trend",
+            indicator="rsi",
+            params={"interval": "1m", "period": 14, "oversold": 30, "overbought": 70},
+            invest_amount=CAPITAL,
+            state={},
+        ),
+        CAPITAL,
+        FEE,
+    )
+
+    warm_up_end = START + timedelta(minutes=14)
+    early = [trade for trade in run.trades if trade.executed_at < warm_up_end]
+    assert early == [], f"워밍업 중 거래가 났다: {[(t.side, t.executed_at) for t in early]}"

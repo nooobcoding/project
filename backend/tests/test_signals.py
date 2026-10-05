@@ -124,17 +124,31 @@ def test_counter_trend_rsi_no_signal_when_neutral():
 
 
 def test_trend_macd_line_crosses_above_signal_buys():
-    """closes=[1,2], (2,3,2) → macd_line=[0,0.1667], signal_line=[0,0.1111].
-    diff=[0, 0.0556] → 0에서 양수로 막 돌파."""
-    closes = _closes(1, 2)
+    """(2,3,2)의 시그널은 index 3부터 정의된다(장기 3 + 시그널 2 − 2). 그 뒤에 교차를 만든다.
+
+    closes=[5,4,3,2,1,3] → histogram=[–,–,–,-0.0509,-0.0337,0.1464] → 음수에서 양수로 돌파.
+
+    예전 버전은 closes=[1,2] 두 봉으로 교차를 만들었다 — 장기 기간(3)보다 짧은 데이터로 낸
+    신호를 정상으로 고정해 둔 것이라, 워밍업을 가리면서 함께 고쳤다.
+    """
+    closes = _closes(5, 4, 3, 2, 1, 3)
     signal = evaluate_trend_macd(closes, {"short_period": 2, "long_period": 3, "signal_period": 2})
     assert signal == "buy"
 
 
 def test_trend_macd_line_crosses_below_signal_sells():
-    closes = _closes(2, 1)
+    """closes=[1,2,3,4,5,3] → histogram=[–,–,–,0.0509,0.0337,-0.1464] → 양수에서 음수로."""
+    closes = _closes(1, 2, 3, 4, 5, 3)
     signal = evaluate_trend_macd(closes, {"short_period": 2, "long_period": 3, "signal_period": 2})
     assert signal == "sell"
+
+
+def test_trend_macd_ignores_crossing_inside_warm_up():
+    """워밍업 안에서 생긴 교차는 신호가 아니다 — 예전에는 봉 2개로 매수를 냈다."""
+    signal = evaluate_trend_macd(
+        _closes(1, 2), {"short_period": 2, "long_period": 3, "signal_period": 2}
+    )
+    assert signal is None
 
 
 def test_trend_macd_no_duplicate_while_diff_stays_positive():
@@ -148,17 +162,17 @@ def test_trend_macd_no_duplicate_while_diff_stays_positive():
 
 
 def test_counter_trend_macd_buys_on_histogram_rebound():
-    """closes=[1,2,1,3] → histogram≈[0,0.0556,-0.0463,0.0879]. 직전(-0.0463)이 국지적 저점이고
-    최신(0.0879)이 반등 → buy."""
-    closes = _closes(1, 2, 1, 3)
+    """closes=[5,4,3,2,3,1,3] → histogram=[–,–,–,-0.0509,0.0774,-0.0573,0.1181].
+    직전(-0.0573)이 국지적 저점이고 최신(0.1181)이 반등 → buy. 세 값 모두 워밍업 이후다."""
+    closes = _closes(5, 4, 3, 2, 3, 1, 3)
     signal = evaluate_counter_trend_macd(closes, {"short_period": 2, "long_period": 3, "signal_period": 2})
     assert signal == "buy"
 
 
 def test_counter_trend_macd_sells_on_histogram_turn_down():
-    """closes=[1,2,3,4] → histogram≈[0,0.0556,0.0648,0.0509]. 직전(0.0648)이 국지적 고점이고
-    최신(0.0509)이 하락전환 → sell."""
-    closes = _closes(1, 2, 3, 4)
+    """closes=[5,4,3,2,1,3,2] → histogram=[–,–,–,-0.0509,-0.0337,0.1464,0.0163].
+    직전(0.1464)이 국지적 고점이고 최신(0.0163)이 하락전환 → sell. 세 값 모두 워밍업 이후다."""
+    closes = _closes(5, 4, 3, 2, 1, 3, 2)
     signal = evaluate_counter_trend_macd(closes, {"short_period": 2, "long_period": 3, "signal_period": 2})
     assert signal == "sell"
 

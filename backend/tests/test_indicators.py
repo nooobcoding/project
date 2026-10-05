@@ -28,13 +28,15 @@ def test_calc_rsi_wilder_smoothing():
     ewm(alpha=0.5, adjust=False)는 첫 유효값을 시드로 그대로 쓰고 이후 재귀식을 적용한다:
       avg_gain = [NaN, 2.0, 1.0, 1.5, 1.25]
       avg_loss = [NaN, 0.0, 0.5, 0.25, 0.125]
-    idx1은 avg_loss=0이라 100으로 마스킹, 이후는 rs=avg_gain/avg_loss로 정상 계산한다.
+    idx0~1은 가격 변화가 `period`(2)개 쌓이기 전이라 NaN이다. 예전에는 idx1을 avg_loss=0이라
+    100으로 내보냈는데, 변화 1개로 만든 RSI라 신호로 쓰면 안 된다 — 백테스트가 두 번째 봉에서
+    가짜 과매도 매수를 냈다. 워밍업 이후의 값(idx2~)은 계산식 그대로라 이전과 동일하다.
     """
     closes = pd.Series([10.0, 12.0, 11.0, 13.0, 14.0])
     rsi = calc_rsi(closes, period=2)
 
     assert pd.isna(rsi.iloc[0])
-    assert rsi.iloc[1] == pytest.approx(100.0)
+    assert pd.isna(rsi.iloc[1])
     assert rsi.iloc[2] == pytest.approx(100 - 100 / 3)  # rs=1.0/0.5=2.0
     assert rsi.iloc[3] == pytest.approx(100 - 100 / 7)  # rs=1.5/0.25=6.0
     assert rsi.iloc[4] == pytest.approx(100 - 100 / 11)  # rs=1.25/0.125=10.0
@@ -81,3 +83,58 @@ def test_calc_bollinger_population_std():
     assert mid.iloc[4] == pytest.approx(4.0)
     assert upper.iloc[4] == pytest.approx(5.632993, abs=1e-5)
     assert lower.iloc[4] == pytest.approx(2.367007, abs=1e-5)
+
+
+# ---------------------------------------------------------------- 워밍업 구간
+
+
+@pytest.mark.parametrize("period", [2, 14, 30])
+def test_calc_rsi_is_undefined_until_period_changes_accumulate(period):
+    """가격 변화가 `period`개 쌓이기 전에는 RSI가 정의되지 않는다 (MA가 앞쪽을 NaN으로 두는 것과 같다).
+
+    예전에는 두 번째 봉부터 값을 냈고, 변화 1개짜리 RSI는 0이나 100이라 그대로 과매도·과매수
+    신호가 됐다 — 기본값 RSI 14 백테스트가 시작 두 번째 봉에서 매수했다.
+    """
+    closes = pd.Series([100.0 - i for i in range(period + 3)])  # 계속 하락 → 계산되면 0
+    rsi = calc_rsi(closes, period=period)
+
+    assert rsi.iloc[:period].isna().all()
+    assert not pd.isna(rsi.iloc[period])
+
+
+def test_calc_rsi_longer_than_data_is_all_undefined():
+    """데이터보다 긴 기간은 전부 NaN — 예전에는 기간 1000을 400봉에 넣으면 매도 신호 377건이 났다."""
+    closes = pd.Series([100.0 + (i % 7) for i in range(50)])
+
+    assert calc_rsi(closes, period=100).isna().all()
+
+
+def test_calc_macd_is_undefined_until_long_and_signal_warm_up():
+    closes = pd.Series([float(i) for i in range(1, 60)])
+    macd_line, signal_line, histogram = calc_macd(closes, short_period=12, long_period=26, signal_period=9)
+
+    assert macd_line.iloc[:25].isna().all() and not pd.isna(macd_line.iloc[25])
+    ready = 26 + 9 - 2
+    assert signal_line.iloc[:ready].isna().all() and not pd.isna(signal_line.iloc[ready])
+    assert histogram.iloc[:ready].isna().all() and not pd.isna(histogram.iloc[ready])
+
+
+def test_warm_up_masking_does_not_change_later_values():
+    """가리는 것은 결과뿐이고 재귀식은 그대로다 — 워밍업 이후 값이 마스킹 전 계산과 같아야 한다.
+
+    `min_periods`로 구현하면 MACD 시그널선의 EMA 시작점이 밀려 이 테스트가 깨진다.
+    """
+    import numpy as np
+
+    rng = np.random.default_rng(11)
+    closes = pd.Series(100 + np.cumsum(rng.normal(0, 1, 120)))
+
+    ema_short = closes.ewm(span=12, adjust=False).mean()
+    ema_long = closes.ewm(span=26, adjust=False).mean()
+    raw_macd = ema_short - ema_long
+    raw_signal = raw_macd.ewm(span=9, adjust=False).mean()
+
+    _, signal_line, _ = calc_macd(closes, 12, 26, 9)
+
+    ready = 26 + 9 - 2
+    assert np.allclose(signal_line.iloc[ready:], raw_signal.iloc[ready:], rtol=0, atol=0)
