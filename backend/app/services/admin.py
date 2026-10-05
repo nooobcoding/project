@@ -303,3 +303,34 @@ def set_user_status(db: Session, actor: User, user_id: int, status: str) -> dict
         "deactivated_slot_ids": deactivated_slot_ids,
         "canceled_order_ids": [order_id for order_id, _ in canceled],
     }
+
+
+# ---------------------------------------------------------------- 3-C. 슬롯 강제 OFF
+
+
+class SlotNotFoundError(Exception):
+    """대상 슬롯이 없다."""
+
+
+def deactivate_slot(db: Session, actor: User, slot_id: int) -> StrategySlot:
+    """슬롯을 강제로 끈다 (05 3-C). 사용자 OFF와 같은 `deactivate_in_session`을 쓴다.
+
+    사용자 OFF처럼 잠그는 것은 슬롯 행뿐이다 — OFF는 돈을 움직이지 않고 `state`도 건드리지
+    않는다. 소유권은 보지 않는다(관리자이므로). 이미 꺼져 있으면 아무것도 남기지 않는다.
+    """
+    slot = db.execute(
+        select(StrategySlot).where(StrategySlot.id == slot_id).with_for_update()
+    ).scalar_one_or_none()
+    if slot is None:
+        db.rollback()
+        raise SlotNotFoundError()
+
+    if slot.is_active:
+        strategy_slots.deactivate_in_session(slot)
+        record_audit(
+            db, actor, "slot.deactivate", "strategy_slot", slot.id,
+            {"user_id": slot.user_id, "coin_symbol": slot.coin_symbol},
+        )
+    db.commit()
+    db.refresh(slot)
+    return slot

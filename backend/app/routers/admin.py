@@ -26,6 +26,7 @@ from app.schemas.admin import (
     AdminUserStatusResponse,
     AdminUserSummary,
 )
+from app.schemas.strategy_slots import StrategySlotResponse
 from app.services import admin as admin_service
 from app.services.auth import require_admin
 
@@ -115,3 +116,16 @@ def patch_user_status(
             status_code=http_status.HTTP_400_BAD_REQUEST, detail="관리자 계정은 정지할 수 없습니다."
         )
     return AdminUserStatusResponse(**result)
+
+
+@router.post("/strategy-slots/{slot_id}/deactivate", response_model=StrategySlotResponse)
+def deactivate_slot(
+    slot_id: int, db: Session = Depends(get_session), admin: User = Depends(require_admin)
+) -> StrategySlotResponse:
+    try:
+        slot = admin_service.deactivate_slot(db, admin, slot_id)
+    except admin_service.SlotNotFoundError:
+        raise HTTPException(
+            status_code=http_status.HTTP_404_NOT_FOUND, detail="존재하지 않는 전략입니다."
+        )
+    return slot_response(slot)

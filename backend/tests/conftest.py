@@ -143,6 +143,14 @@ def make_user(test_coin):
     # 참조하므로 따로 지우지 않아도 함께 사라진다.
     with session_scope() as db:
         for user_id in created:
+            # 슬롯 대상 감사 로그는 슬롯이 지워져도 남는다(target_id에 FK가 없다) — 슬롯을 지우기 전에 치운다.
+            db.execute(
+                text(
+                    "DELETE FROM audit_logs WHERE target_type = 'strategy_slot' AND target_id IN "
+                    "(SELECT id FROM strategy_slots WHERE user_id = :user_id)"
+                ),
+                {"user_id": user_id},
+            )
             for table in (
                 "notifications",
                 "orders",
