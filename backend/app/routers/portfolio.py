@@ -56,19 +56,20 @@ def get_portfolio_summary(
 def get_portfolio_holdings(
     db: Session = Depends(get_session), current_user=Depends(get_current_user)
 ) -> list[HoldingItem]:
-    return [
-        HoldingItem(
-            coin_symbol=item["coin_symbol"],
-            korean_name=item["korean_name"],
-            quantity=str(item["quantity"]),
-            avg_buy_price=str(item["avg_buy_price"]),
-            current_price=str(item["current_price"]),
-            valuation=str(item["valuation"]),
-            profit=str(item["profit"]),
-            profit_pct=str(item["profit_pct"]),
-        )
-        for item in list_holdings(db, current_user.id)
-    ]
+    return [_holding_item(item) for item in list_holdings(db, current_user.id)]
+
+
+def _holding_item(item: dict) -> HoldingItem:
+    return HoldingItem(
+        coin_symbol=item["coin_symbol"],
+        korean_name=item["korean_name"],
+        quantity=str(item["quantity"]),
+        avg_buy_price=str(item["avg_buy_price"]),
+        current_price=str(item["current_price"]),
+        valuation=str(item["valuation"]),
+        profit=str(item["profit"]),
+        profit_pct=str(item["profit_pct"]),
+    )
 
 
 @router.get("/trades", response_model=TradeListResponse)

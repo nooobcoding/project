@@ -6,11 +6,14 @@
   3) 감사 로그를 같은 트랜잭션에 남긴다 — 행위는 됐는데 기록은 없는 상태를 만들지 않는다.
 """
 
-from sqlalchemy import select
+from decimal import Decimal
+
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import AuditLog, User
+from app.models import AuditLog, Balance, Holding, StrategySlot, User
 from app.models.user import ROLE_ADMIN, ROLE_USER
+from app.services import orders, portfolio, strategy_slots, wallet
 
 
 class UserNotFoundError(Exception):
@@ -80,3 +83,120 @@ def set_role(db: Session, email: str, role: str) -> User:
     db.commit()
     db.refresh(user)
     return user
+
+
+# ---------------------------------------------------------------- 3-A. 유저 목록·상세 (읽기 전용)
+
+MAX_PAGE_SIZE = 100
+
+
+def list_users(
+    db: Session,
+    *,
+    status: str | None,
+    has_active_slots: bool | None,
+    email_query: str | None,
+    oldest_first: bool,
+    page: int,
+    page_size: int,
+) -> tuple[list[dict], int]:
+    """관리자 유저 목록 (05 3-A). 한 페이지를 **쿼리 3번**으로 만든다.
+
+    유저마다 `portfolio.get_summary`를 부르면 페이지 크기만큼 쿼리가 곱으로 늘어난다. 대신
+    목록·카운트를 한 번에 뽑고, 그 페이지 유저들의 보유만 한 번 더 읽어 평가한다. 평가 단가는
+    `portfolio._current_price`를 그대로 써서 유저 본인 화면과 같은 값이 나오게 한다.
+    """
+    active_slots = (
+        select(StrategySlot.user_id, func.count().label("active_slot_count"))
+        .where(StrategySlot.is_active.is_(True))
+        .group_by(StrategySlot.user_id)
+        .subquery()
+    )
+    slot_count = func.coalesce(active_slots.c.active_slot_count, 0)
+
+    conditions = []
+    if status is not None:
+        conditions.append(User.status == status)
+    if has_active_slots is True:
+        conditions.append(slot_count > 0)
+    elif has_active_slots is False:
+        conditions.append(slot_count == 0)
+    if email_query:
+        conditions.append(User.email.ilike(f"%{_escape_like(email_query)}%", escape="\\"))
+
+    base = (
+        select(
+            User.id,
+            User.email,
+            User.role,
+            User.status,
+            User.created_at,
+            func.coalesce(Balance.krw_balance, 0).label("krw_balance"),
+            slot_count.label("active_slot_count"),
+        )
+        .outerjoin(Balance, Balance.user_id == User.id)
+        .outerjoin(active_slots, active_slots.c.user_id == User.id)
+        .where(*conditions)
+    )
+    total = db.scalar(select(func.count()).select_from(base.subquery())) or 0
+    order = (User.created_at.asc(), User.id.asc()) if oldest_first else (User.created_at.desc(), User.id.desc())
+    rows = db.execute(base.order_by(*order).offset((page - 1) * page_size).limit(page_size)).all()
+
+    coin_valuation = _coin_valuations(db, [row.id for row in rows])
+    items = [
+        {
+            "id": row.id,
+            "email": row.email,
+            "role": row.role,
+            "status": row.status,
+            "created_at": row.created_at,
+            "active_slot_count": row.active_slot_count,
+            "krw_balance": row.krw_balance,
+            "total_valuation": row.krw_balance + coin_valuation.get(row.id, Decimal(0)),
+        }
+        for row in rows
+    ]
+    return items, total
+
+
+def _escape_like(value: str) -> str:
+    """검색어의 `%`·`_`를 글자 그대로 찾게 한다 — 안 그러면 `_` 하나가 모든 이메일에 걸린다."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _coin_valuations(db: Session, user_ids: list[int]) -> dict[int, Decimal]:
+    if not user_ids:
+        return {}
+    holdings = db.scalars(
+        select(Holding).where(Holding.user_id.in_(user_ids), Holding.quantity > 0)
+    ).all()
+    valuations: dict[int, Decimal] = {}
+    for holding in holdings:
+        valuations[holding.user_id] = valuations.get(holding.user_id, Decimal(0)) + (
+            holding.quantity * portfolio._current_price(holding)
+        )
+    return valuations
+
+
+RECENT_LIMIT = 20
+
+
+def get_user_detail(db: Session, user_id: int) -> dict:
+    """관리자 유저 상세 (05 3-A). 유저 본인 화면이 쓰는 함수에 user_id만 바꿔 넘긴다."""
+    user = db.get(User, user_id)
+    if user is None:
+        raise UserNotFoundError()
+
+    transactions, _ = wallet.list_transactions(
+        db, user_id, type_=None, start=None, end=None, page=1, page_size=RECENT_LIMIT
+    )
+    return {
+        "user": user,
+        "summary": portfolio.get_summary(db, user_id),
+        "withdrawable_krw": wallet.get_withdrawable_krw(db, user_id),
+        "holdings": portfolio.list_holdings(db, user_id),
+        "slots": strategy_slots.list_slots(db, user_id),
+        "pending_orders": orders.list_pending_orders(db, user_id),
+        "recent_orders": orders.list_order_history(db, user_id, limit=RECENT_LIMIT),
+        "recent_transactions": transactions,
+    }

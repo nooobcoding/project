@@ -20,6 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.routers import (
     account,
+    admin,
     auth,
     backtest,
     candles,
@@ -233,6 +234,7 @@ app.include_router(wallet.router)
 app.include_router(strategy_slots.router)
 app.include_router(backtest.router)
 app.include_router(portfolio.router)
+app.include_router(admin.router)
 
 
 @app.get("/health")
