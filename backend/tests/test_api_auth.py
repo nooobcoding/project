@@ -215,3 +215,91 @@ def test_login_with_wrong_password_is_rejected(client, make_user):
     response = client.post("/api/auth/login", json={"email": email, "password": "wrong"})
 
     assert response.status_code == 401
+
+
+# ---------------------------------------------------------------- 비밀번호 72바이트 상한
+
+
+@pytest.fixture
+def registered_emails():
+    """API로 가입시킨 유저를 끝나면 지운다 (`make_user`를 거치지 않으므로 직접 정리)."""
+    from sqlalchemy import text
+
+    emails: list[str] = []
+    yield emails
+    with session_scope() as db:
+        for email in emails:
+            db.execute(
+                text("DELETE FROM balances WHERE user_id IN (SELECT id FROM users WHERE email = :e)"),
+                {"e": email},
+            )
+            db.execute(text("DELETE FROM users WHERE email = :e"), {"e": email})
+
+
+def _register(client, registered_emails, password: str):
+    import uuid
+
+    email = f"pw-cap-{uuid.uuid4().hex[:10]}@example.com"
+    registered_emails.append(email)
+    return client.post("/api/auth/register", json={"email": email, "password": password})
+
+
+@requires_db
+@pytest.mark.parametrize(
+    "password",
+    [
+        pytest.param("a1" * 36 + "x", id="영문 73바이트"),
+        pytest.param("가" * 24 + "a1", id="한글 24자+영숫자 = 74바이트"),
+    ],
+)
+def test_register_rejects_password_over_72_bytes(client, registered_emails, password):
+    """bcrypt가 72바이트 이후를 조용히 잘라서, 그 뒤만 다른 비밀번호로도 로그인됐다 (실측)."""
+    response = _register(client, registered_emails, password)
+
+    assert response.status_code == 422
+    assert "비밀번호가 너무 깁니다" in response.json()["detail"][0]["msg"]
+
+
+@requires_db
+@pytest.mark.parametrize(
+    "password",
+    [
+        pytest.param("a1" * 36, id="영문 정확히 72바이트"),
+        pytest.param("가" * 23 + "a1", id="한글 23자+영숫자 = 71바이트"),
+    ],
+)
+def test_register_accepts_password_at_or_under_72_bytes(client, registered_emails, password):
+    assert _register(client, registered_emails, password).status_code == 201
+
+
+@requires_db
+def test_password_change_enforces_the_same_cap(client, make_user):
+    """한쪽에만 상한이 있으면 가입 후 비밀번호 변경으로 우회된다."""
+    from app.services.auth import hash_password
+
+    user_id = make_user(password_hash=hash_password("current1"))
+    token = create_access_token(user_id)
+
+    response = client.patch(
+        "/api/account/password",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"current_password": "current1", "new_password": "a1" * 36 + "x"},
+    )
+
+    assert response.status_code == 422
+
+
+@requires_db
+def test_existing_long_password_user_can_still_log_in(client, make_user):
+    """상한 도입 **전**에 긴 비밀번호로 가입한 유저가 잠기면 안 된다 — 로그인에는 상한을 걸지 않는다."""
+    from app.models import User
+    from app.services.auth import hash_password
+
+    long_password = "a1" * 50  # 100바이트 — 상한 이전 가입자
+    user_id = make_user(password_hash=hash_password(long_password))
+    with session_scope() as db:
+        email = db.get(User, user_id).email
+
+    response = client.post("/api/auth/login", json={"email": email, "password": long_password})
+
+    assert response.status_code == 200, response.text

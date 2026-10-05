@@ -1,11 +1,8 @@
 """04-settings 요청/응답 DTO — 계정 설정."""
 
-import re
-
 from pydantic import BaseModel, field_validator
 
-# 01-auth.md 2-B와 동일 규칙 — backend/app/schemas/auth.py의 검증과 동기화되어야 한다
-_PASSWORD_PATTERN = re.compile(r"^(?=.*[A-Za-z])(?=.*\d).{8,}$")
+from app.schemas.auth import validate_password_rules
 
 
 class AccountResponse(BaseModel):
@@ -19,6 +16,5 @@ class PasswordChangeRequest(BaseModel):
     @field_validator("new_password")
     @classmethod
     def validate_new_password(cls, value: str) -> str:
-        if not _PASSWORD_PATTERN.match(value):
-            raise ValueError("비밀번호는 8자 이상, 영문과 숫자를 포함해야 합니다.")
-        return value
+        # 가입과 같은 규칙이어야 한다 — 한쪽에만 상한이 있으면 변경으로 우회된다.
+        return validate_password_rules(value)
