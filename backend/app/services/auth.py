@@ -13,6 +13,7 @@ from app.config import settings
 from app.constants import INITIAL_SEED_KRW
 from app.database import get_session
 from app.models import Balance, User
+from app.models.user import ROLE_ADMIN, STATUS_SUSPENDED
 
 _pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 _oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
@@ -24,6 +25,14 @@ class EmailAlreadyExistsError(Exception):
 
 class InvalidCredentialsError(Exception):
     """01-auth.md 4장 — 이메일 또는 비밀번호가 일치하지 않는 경우."""
+
+
+class AccountSuspendedError(Exception):
+    """확장판 05-admin.md 5장 — 정지된 계정으로 로그인한 경우."""
+
+
+SUSPENDED_MESSAGE = "정지된 계정입니다. 관리자에게 문의해주세요."
+FORBIDDEN_MESSAGE = "권한이 없습니다."
 
 
 def hash_password(password: str) -> str:
@@ -71,6 +80,10 @@ def authenticate_user(db: Session, email: str, password: str) -> User:
     user = get_user_by_email(db, email)
     if user is None or not verify_password(password, user.password_hash):
         raise InvalidCredentialsError()
+    # 비밀번호가 맞았을 때만 정지 사실을 알린다 — 틀린 비밀번호에도 알려주면 남의 이메일로
+    # 계정 상태를 떠볼 수 있다. 토큰을 아예 내주지 않는 이유는 get_current_user 참고.
+    if user.status == STATUS_SUSPENDED:
+        raise AccountSuspendedError()
     return user
 
 
@@ -94,4 +107,16 @@ def get_current_user(
     user = db.get(User, user_id)
     if user is None:
         raise credentials_error
+    # 토큰이 아니라 DB의 status를 매 요청 본다 (확장판 05-admin.md 2.2절). JWT는 24시간 유효하고
+    # 폐기 수단이 없으므로, 토큰만 믿으면 정지된 계정이 하루 동안 계속 API를 쓴다. 이미 User를
+    # 읽고 있어서 추가 쿼리는 없다.
+    if user.status == STATUS_SUSPENDED:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=SUSPENDED_MESSAGE)
+    return user
+
+
+def require_admin(user: User = Depends(get_current_user)) -> User:
+    """관리자 API 의존성. 프론트의 AdminRoute는 편의일 뿐이고 보안 경계는 여기다."""
+    if user.role != ROLE_ADMIN:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=FORBIDDEN_MESSAGE)
     return user

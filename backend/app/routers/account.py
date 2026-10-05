@@ -19,8 +19,8 @@ router = APIRouter(prefix="/api/account", tags=["account"])
 
 @router.get("", response_model=AccountResponse)
 def get_account(current_user=Depends(get_current_user)) -> AccountResponse:
-    """04-settings.md 2-A — 가입 이메일 표시."""
-    return AccountResponse(email=current_user.email)
+    """04-settings.md 2-A — 가입 이메일 표시. role은 프론트가 관리자 메뉴 노출 여부를 정하는 데 쓴다."""
+    return AccountResponse(email=current_user.email, role=current_user.role)
 
 
 @router.patch("/password")

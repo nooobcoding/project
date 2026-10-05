@@ -7,6 +7,7 @@ from app.schemas.auth import validate_password_rules
 
 class AccountResponse(BaseModel):
     email: str
+    role: str
 
 
 class PasswordChangeRequest(BaseModel):

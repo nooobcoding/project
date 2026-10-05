@@ -7,6 +7,8 @@ from sqlalchemy.orm import Session
 from app.database import get_session
 from app.schemas.auth import EmailAvailabilityResponse, LoginRequest, RegisterRequest, TokenResponse
 from app.services.auth import (
+    SUSPENDED_MESSAGE,
+    AccountSuspendedError,
     EmailAlreadyExistsError,
     InvalidCredentialsError,
     authenticate_user,
@@ -45,6 +47,8 @@ def login(payload: LoginRequest, db: Session = Depends(get_session)) -> TokenRes
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="이메일 또는 비밀번호가 올바르지 않습니다.",
         )
+    except AccountSuspendedError:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=SUSPENDED_MESSAGE)
     return TokenResponse(access_token=create_access_token(user.id))
 
 
