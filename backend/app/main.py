@@ -18,6 +18,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
+from app.http_admission import AdmissionMiddleware
 from app.routers import (
     account,
     admin,
@@ -206,6 +207,11 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="코인 자동매매 프로그램 API", lifespan=lifespan)
+
+# 동시 처리 요청을 DB 커넥션 수 이하로 묶는다 — 넘으면 요청과 스레드가 서로의 커넥션을 기다리며
+# 30초씩 멈췄다 (app/http_admission.py). CORS보다 **먼저** 등록해 안쪽에 둔다: 바깥에 두면
+# 입장 거절(503) 응답에 CORS 헤더가 안 붙어 브라우저가 문구 대신 네트워크 오류를 본다.
+app.add_middleware(AdmissionMiddleware)
 
 # 허용 origin은 배포 환경마다 다르므로 설정값(CORS_ALLOWED_ORIGINS)에서 가져온다 (app/config.py)
 app.add_middleware(

@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     # 리더·샤드 락의 전용 커넥션은 NullPool이라 이 값과 별개로 역할당 1~2개가 더 든다.
     db_pool_size: int = 5
     db_max_overflow: int = 10
+    # 동시에 처리하는 HTTP 요청 상한 (app/http_admission.py). 0이면 풀 용량에서 다른 역할 몫을
+    # 뺀 값을 쓴다. 넘치는 요청은 이벤트 루프에서 기다리다가 이 시간이 지나면 503을 받는다.
+    http_max_in_flight: int = 0
+    http_admission_wait_seconds: float = 10.0
     # 기본값을 두지 않는다 — 소스코드에 박힌 기본 시크릿은 공개 저장소에서 그대로
     # 노출되므로, 값을 실제로 설정하지 않으면 서버가 기동 자체를 못 하게 막는다.
     jwt_secret_key: str
