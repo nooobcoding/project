@@ -54,6 +54,10 @@ services:
       <<: *backend-env
       PROCESS_ROLES: api
       RUN_MIGRATIONS: "1" # 마이그레이션은 여기서만
+      # api는 요청 스레드가 많아 풀을 키운다. 동시 처리 요청 수가 이 값(10+10)으로 묶인다
+      # (app/http_admission.py). 프로세스 API_WORKERS개 × 20 + 나머지 역할 < max_connections(300)
+      DB_POOL_SIZE: "10"
+      DB_MAX_OVERFLOW: "10"
     ports:
       - "8000:8000"
     healthcheck:
