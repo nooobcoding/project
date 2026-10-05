@@ -282,6 +282,45 @@ def _current_penalty() -> float:
     return max(float(raw), 1.0) if raw else 1.0
 
 
+def peek() -> dict | None:
+    """버킷 현황을 **읽기만** 한다 — 관리자 시스템 대시보드용 (확장판 05-admin.md 3-D).
+
+    소비 경로(Lua 스크립트·`_consume_local`)와 같은 리필 식으로 지금 시점의 토큰 수를 계산하되
+    아무것도 쓰지 않는다. 조회가 버킷을 건드리면 대시보드를 열 때마다 레이트리밋 상태가 바뀐다.
+
+    `memory` 백엔드는 **이 프로세스의** 버킷이다. 단일 프로세스 구성에서는 그게 전체지만,
+    역할을 나눈 구성에서 `api` 프로세스의 로컬 버킷은 실제 호출자(scheduler·백테스트)와 무관하다.
+    Redis를 읽지 못하면 None — 대시보드는 "모름"으로 보여야지 가득 찬 것처럼 보이면 안 된다.
+    """
+    penalty = _current_penalty()
+    buckets = {}
+    for prio in ("high", "low"):
+        capacity = _capacity(prio)
+        refill = _refill_rate(prio) / penalty
+        if _enabled():
+            try:
+                from app.services.redis_client import get_redis
+
+                tokens_raw, ts_raw = get_redis().hmget(f"{KEY_PREFIX}:{prio}", "tokens", "ts")
+            except Exception:
+                return None
+            now = time.time()
+        else:
+            bucket = _local_buckets[prio]
+            with bucket.guard:
+                tokens_raw, ts_raw = bucket.tokens, bucket.updated_at
+            now = time.monotonic()
+
+        if tokens_raw is None or ts_raw is None:
+            tokens = capacity  # 아직 아무도 안 썼다 — 소비 경로도 가득 찬 버킷으로 시작한다
+        else:
+            elapsed = max(now - float(ts_raw), 0.0)
+            tokens = min(capacity, float(tokens_raw) + elapsed * refill)
+        buckets[prio] = {"tokens": round(tokens, 2), "capacity": capacity}
+
+    return {"backend": "redis" if _enabled() else "memory", "penalty": penalty, "buckets": buckets}
+
+
 def reset() -> None:
     """테스트용 — 프로세스 안 버킷과 백오프를 초기 상태로 되돌린다."""
     global _local_penalty, _local_penalty_until

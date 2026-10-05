@@ -6,14 +6,16 @@
   3) 감사 로그를 같은 트랜잭션에 남긴다 — 행위는 됐는데 기록은 없는 상태를 만들지 않는다.
 """
 
+from datetime import datetime, timezone
 from decimal import Decimal
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import AuditLog, Balance, Holding, Order, StrategySlot, User
-from app.models.user import ROLE_ADMIN, ROLE_USER, STATUS_SUSPENDED
-from app.services import orders, pending_symbols, portfolio, strategy_slots, wallet
+from app.config import settings
+from app.models import AuditLog, Balance, Holding, Order, StrategySlot, User, WorkerHeartbeat
+from app.models.user import ROLE_ADMIN, ROLE_USER, STATUS_ACTIVE, STATUS_SUSPENDED
+from app.services import leader, orders, pending_symbols, portfolio, rate_limit, strategy_slots, wallet
 
 
 class UserNotFoundError(Exception):
@@ -334,3 +336,93 @@ def deactivate_slot(db: Session, actor: User, slot_id: int) -> StrategySlot:
     db.commit()
     db.refresh(slot)
     return slot
+
+
+# ---------------------------------------------------------------- 3-D. 시스템 대시보드
+
+# heartbeat가 이 배수만큼 tick 주기를 넘기면 "멈춤"으로 본다 (06-observability.md 3.4절 "샤드별
+# 마지막 tick 경과" — 락은 쥐고 있는데 tick이 안 도는 프로세스). 역할마다 주기가 달라서 숫자
+# 하나로 정하지 않고 각 역할의 실제 주기 상수에서 끌어온다.
+STALE_INTERVAL_MULTIPLIER = 3
+_FALLBACK_INTERVAL_SECONDS = 30
+
+
+def _tick_intervals() -> dict[str, int]:
+    from app.services.candle_prefill import PREFILL_INTERVAL_SECONDS
+    from app.services.matcher_runner import HEARTBEAT_INTERVAL_SECONDS
+    from app.strategy_engine.worker import TICK_INTERVAL_SECONDS
+
+    return {
+        "worker": TICK_INTERVAL_SECONDS,
+        "matcher": HEARTBEAT_INTERVAL_SECONDS,
+        "candle-prefill": PREFILL_INTERVAL_SECONDS,
+    }
+
+
+def _shard_coverage(namespace: int, applicable: bool) -> dict:
+    """미점유 샤드 목록. `shard_coverage._check`를 쓰지 않는다 — 그쪽은 연속 미점유 횟수를 세고
+    경고 로그를 남기는 scheduler 전용 상태라, 대시보드를 열 때마다 그 카운터가 오르면 안 된다.
+
+    조회에 실패하면 `missing=None`이다. 빈 목록으로 내리면 "전부 점유됨"으로 읽힌다.
+    """
+    if not applicable:
+        return {"applicable": False, "missing": []}
+    try:
+        occupied = leader.occupied_shards(namespace)
+    except Exception:
+        return {"applicable": True, "missing": None}
+    return {
+        "applicable": True,
+        "missing": sorted(set(range(settings.shard_count)) - occupied),
+    }
+
+
+def get_system_overview(db: Session) -> dict:
+    """관리자 시스템 대시보드 (05 3-D). **샤드 커버리지가 맨 위다** — 나머지는 "느린가"를 보지만
+    이건 "아예 멈췄는가"를 본다."""
+    now = datetime.now(timezone.utc)
+    intervals = _tick_intervals()
+
+    heartbeats = []
+    for row in db.scalars(
+        select(WorkerHeartbeat).order_by(WorkerHeartbeat.role, WorkerHeartbeat.shard_id, WorkerHeartbeat.process_id)
+    ):
+        interval = intervals.get(row.role, _FALLBACK_INTERVAL_SECONDS)
+        age = (now - row.last_tick_at).total_seconds()
+        heartbeats.append(
+            {
+                "role": row.role,
+                "shard_id": row.shard_id,
+                "process_id": row.process_id,
+                "last_tick_at": row.last_tick_at,
+                "seconds_since_tick": int(age),
+                "stale": age > interval * STALE_INTERVAL_MULTIPLIER,
+                "last_duration_ms": row.last_duration_ms,
+                "max_duration_ms": row.max_duration_ms,
+                "over_budget_count": row.over_budget_count,
+                "item_count": row.item_count,
+                "db_connections": row.db_connections,
+                "error_count": row.error_count,
+                "skip_count": row.skip_count,
+            }
+        )
+
+    user_counts = dict(db.execute(select(User.status, func.count()).group_by(User.status)).all())
+    return {
+        "shard_count": settings.shard_count,
+        "worker_coverage": _shard_coverage(leader.WORKER_SHARD_NAMESPACE, applicable=True),
+        # 단일 프로세스(memory) 구성에서는 체결을 시세 루프가 직접 해서 matcher 샤드 점유가 없다
+        "matcher_coverage": _shard_coverage(
+            leader.MATCHER_SHARD_NAMESPACE, applicable=settings.price_cache_backend == "redis"
+        ),
+        "heartbeats": heartbeats,
+        "active_users": user_counts.get(STATUS_ACTIVE, 0),
+        "suspended_users": user_counts.get(STATUS_SUSPENDED, 0),
+        "active_slots": db.scalar(
+            select(func.count()).select_from(StrategySlot).where(StrategySlot.is_active.is_(True))
+        ) or 0,
+        "pending_orders": db.scalar(
+            select(func.count()).select_from(Order).where(Order.status == "pending")
+        ) or 0,
+        "upbit_rate_limit": rate_limit.peek(),
+    }

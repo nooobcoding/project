@@ -25,6 +25,7 @@ from app.schemas.admin import (
     AdminUserStatusRequest,
     AdminUserStatusResponse,
     AdminUserSummary,
+    SystemOverviewResponse,
 )
 from app.schemas.strategy_slots import StrategySlotResponse
 from app.services import admin as admin_service
@@ -129,3 +130,8 @@ def deactivate_slot(
             status_code=http_status.HTTP_404_NOT_FOUND, detail="존재하지 않는 전략입니다."
         )
     return slot_response(slot)
+
+
+@router.get("/system", response_model=SystemOverviewResponse)
+def get_system(db: Session = Depends(get_session)) -> SystemOverviewResponse:
+    return SystemOverviewResponse(**admin_service.get_system_overview(db))

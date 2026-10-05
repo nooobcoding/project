@@ -61,3 +61,47 @@ class AdminUserStatusResponse(BaseModel):
     changed: bool
     deactivated_slot_ids: list[int]
     canceled_order_ids: list[int]
+
+
+class ShardCoverage(BaseModel):
+    applicable: bool
+    missing: list[int] | None  # None = 조회 실패(모름). 빈 목록과 다르다
+
+
+class HeartbeatItem(BaseModel):
+    role: str
+    shard_id: int | None
+    process_id: str
+    last_tick_at: datetime
+    seconds_since_tick: int
+    stale: bool
+    last_duration_ms: int
+    max_duration_ms: int
+    over_budget_count: int
+    item_count: int
+    db_connections: int
+    error_count: int
+    skip_count: int
+
+
+class RateLimitBucket(BaseModel):
+    tokens: float
+    capacity: float
+
+
+class RateLimitStatus(BaseModel):
+    backend: str
+    penalty: float
+    buckets: dict[str, RateLimitBucket]
+
+
+class SystemOverviewResponse(BaseModel):
+    shard_count: int
+    worker_coverage: ShardCoverage
+    matcher_coverage: ShardCoverage
+    heartbeats: list[HeartbeatItem]
+    active_users: int
+    suspended_users: int
+    active_slots: int
+    pending_orders: int
+    upbit_rate_limit: RateLimitStatus | None  # None = Redis 조회 실패
