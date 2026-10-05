@@ -280,3 +280,119 @@ def test_out_of_range_params_keep_the_generic_message(client, auth_headers, test
 
     assert response.status_code == 400
     assert response.json()["detail"] == "기준값은 0~100 사이의 값을 입력해주세요."
+
+
+# ---------------------------------------------------------------- 지표 파라미터 범위
+
+
+def _confirmed_series():
+    """워커가 실제로 보는 길이의 확정봉 — 200봉을 받아 진행 중인 봉을 뺀 개수다."""
+    import numpy as np
+
+    from app.services.candles import DEFAULT_CANDLE_COUNT
+
+    rng = np.random.default_rng(5)
+    return pd.Series(100 + np.cumsum(rng.normal(0, 1, DEFAULT_CANDLE_COUNT - 1)))
+
+
+def test_max_periods_still_produce_defined_values_on_worker_data():
+    """**상한이 근거 있는 숫자인지** — 상한값을 넣어도 신호 함수가 보는 봉에 값이 정의돼야 한다.
+
+    정의되지 않으면 그 상한은 "켜도 영원히 아무것도 안 하는 슬롯"을 허용하는 셈이다. 캔들 수를
+    줄이거나 상한을 올리면 여기서 깨진다.
+    """
+    from app.schemas.strategy_slots import MACD_MAX_WINDOW, MAX_PERIOD
+    from app.strategy_engine.indicators import calc_bollinger, calc_ma, calc_macd, calc_rsi
+
+    closes = _confirmed_series()
+
+    assert not pd.isna(calc_ma(closes, MAX_PERIOD).iloc[-2]), "MA 교차는 직전 봉까지 본다"
+    assert not pd.isna(calc_rsi(closes, MAX_PERIOD).iloc[-2]), "RSI 교차는 직전 봉까지 본다"
+    _, upper, _ = calc_bollinger(closes, MAX_PERIOD)
+    assert not pd.isna(upper.iloc[-2]), "볼린저 돌파는 직전 봉까지 본다"
+
+    signal = MACD_MAX_WINDOW - MAX_PERIOD
+    _, _, histogram = calc_macd(closes, MAX_PERIOD - 1, MAX_PERIOD, signal)
+    assert not pd.isna(histogram.iloc[-3]), "역추세 MACD는 히스토그램 세 개를 본다"
+
+
+def test_macd_window_one_past_the_limit_is_undefined_on_worker_data():
+    """반대쪽 경계 — 합이 한도를 1만 넘어도 워커 데이터로는 정의되지 않는다. 한도가 너무 빡빡한
+    것이 아니라 정확히 맞다는 증거다."""
+    from app.schemas.strategy_slots import MACD_MAX_WINDOW, MAX_PERIOD
+    from app.strategy_engine.indicators import calc_macd
+
+    signal = MACD_MAX_WINDOW - MAX_PERIOD + 1
+    _, _, histogram = calc_macd(_confirmed_series(), MAX_PERIOD - 1, MAX_PERIOD, signal)
+
+    assert pd.isna(histogram.iloc[-3])
+
+
+@pytest.mark.parametrize(
+    "strategy_type,indicator,params",
+    [
+        pytest.param("trend", "ma", {"short_period": 1, "long_period": 20}, id="MA 단기 1"),
+        pytest.param("trend", "ma", {"short_period": 5, "long_period": 151}, id="MA 장기 151"),
+        pytest.param("trend", "rsi", {"period": 1}, id="RSI 기간 1 (매 봉 매수·매도 반복)"),
+        pytest.param("trend", "rsi", {"period": 151}, id="RSI 기간 151"),
+        pytest.param("trend", "rsi", {"threshold": 0}, id="RSI 기준선 0 (영원히 신호 없음)"),
+        pytest.param("trend", "rsi", {"threshold": 100}, id="RSI 기준선 100"),
+        pytest.param("counter_trend", "rsi", {"oversold": 0, "overbought": 70}, id="과매도 0"),
+        pytest.param("counter_trend", "rsi", {"oversold": 30, "overbought": 100}, id="과매수 100"),
+        pytest.param("trend", "bollinger", {"period": 1}, id="볼린저 기간 1 (역추세는 모든 봉 매수)"),
+        pytest.param("trend", "bollinger", {"std_multiplier": 5.1}, id="볼린저 배수 5.1"),
+        pytest.param("trend", "bollinger", {"std_multiplier": 0}, id="볼린저 배수 0"),
+        pytest.param("trend", "macd", {"signal_period": 1}, id="MACD 시그널 1 (교차 불가)"),
+        pytest.param(
+            "trend", "macd", {"short_period": 100, "long_period": 150, "signal_period": 49},
+            id="MACD 장기+시그널 199",
+        ),
+    ],
+)
+def test_indicator_params_outside_range_are_rejected(strategy_type, indicator, params):
+    with pytest.raises(ValueError):
+        validate_params_for(strategy_type, indicator, {"interval": "1d", **params})
+
+
+@pytest.mark.parametrize(
+    "strategy_type,indicator,params",
+    [
+        pytest.param("trend", "ma", {"short_period": 2, "long_period": 150}, id="MA 양 끝"),
+        pytest.param("trend", "rsi", {"period": 2, "threshold": 0.1}, id="RSI 하한"),
+        pytest.param("trend", "rsi", {"period": 150, "threshold": 99.9}, id="RSI 상한"),
+        pytest.param("trend", "bollinger", {"period": 150, "std_multiplier": 5}, id="볼린저 상한"),
+        pytest.param(
+            "trend", "macd", {"short_period": 100, "long_period": 150, "signal_period": 48},
+            id="MACD 장기+시그널 198",
+        ),
+    ],
+)
+def test_indicator_params_at_the_boundary_are_accepted(strategy_type, indicator, params):
+    """음성 대조군 — 경계값 자체는 통과해야 한다 (위의 상한 검증과 짝을 이룬다)."""
+    validate_params_for(strategy_type, indicator, {"interval": "1d", **params})
+
+
+@requires_db
+@pytest.mark.parametrize(
+    "params,expected",
+    [
+        ({"interval": "1d", "period": 1}, "기간은 2~150 사이의 값을 입력해주세요."),
+        ({"interval": "1d", "std_multiplier": 10}, "표준편차 배수는 0보다 크고 5 이하인 값을 입력해주세요."),
+    ],
+)
+def test_range_errors_name_the_field_instead_of_the_rsi_message(client, auth_headers, test_coin, params, expected):
+    """범위 위반이 전부 "기준값은 0~100 사이"로 나가면 기간을 1로 넣은 사용자가 엉뚱한 곳을 고친다."""
+    response = client.post(
+        "/api/strategy-slots",
+        headers=auth_headers,
+        json={
+            "coin_symbol": test_coin,
+            "strategy_type": "trend",
+            "indicator": "bollinger",
+            "params": params,
+            "invest_amount": "1000000",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == expected

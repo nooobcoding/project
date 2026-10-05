@@ -16,6 +16,36 @@ from pydantic import BaseModel, Field, ValidationError, model_validator
 
 Interval = Literal["1m", "10m", "30m", "1h", "1d"]
 
+# ---- 지표 파라미터 범위 ----------------------------------------------------------------------
+#
+# 범위 밖 값은 에러 없이 "아무것도 안 하는 슬롯"이나 "매 봉 신호를 내는 슬롯"이 된다 (실측):
+# RSI 기준선 0·100, 볼린저 배수 100, 기간 > 캔들 수, MACD 시그널 1은 신호가 영원히 안 나오고,
+# 볼린저 역추세 기간 1은 **모든 봉이 매수**, RSI 기간 1은 매 봉 매수·매도가 번갈아 나왔다.
+#
+# 기간 상한은 워커가 보는 데이터에서 나온다. Upbit에서 200봉(1회 최대치, services/candles.py
+# DEFAULT_CANDLE_COUNT)을 받아 진행 중인 봉을 빼면 확정봉은 보통 199개다. 지표마다 필요한 봉은
+# MA 교차 = 장기+1, RSI 교차 = 기간+2, 볼린저 돌파 = 기간+1, MACD = 장기+시그널(역추세는 +1)이다.
+# 단일 기간은 150으로 두면 셋 다 여유가 있지만, MACD는 두 기간의 **합**이 문제라 따로 막는다.
+# 이 숫자들이 실제로 신호를 낼 수 있는지는 tests/test_input_validation.py가 199봉으로 확인한다.
+MIN_PERIOD = 2
+MAX_PERIOD = 150
+MACD_MAX_WINDOW = 198  # 역추세 MACD: 장기 + 시그널 + 1 ≤ 199
+MAX_STD_MULTIPLIER = 5
+
+PERIOD_RANGE_MESSAGE = f"기간은 {MIN_PERIOD}~{MAX_PERIOD} 사이의 값을 입력해주세요."
+STD_RANGE_MESSAGE = f"표준편차 배수는 0보다 크고 {MAX_STD_MULTIPLIER} 이하인 값을 입력해주세요."
+
+
+def _period(default: int | None = None):
+    if default is None:
+        return Field(ge=MIN_PERIOD, le=MAX_PERIOD)
+    return Field(default=default, ge=MIN_PERIOD, le=MAX_PERIOD)
+
+
+def _rsi_level(default: float):
+    # 0·100에는 RSI가 사실상 닿지 않아 신호가 영원히 안 나온다 — 양 끝은 열린 구간으로 둔다.
+    return Field(default=default, gt=0, lt=100)
+
 
 class _ShortBelowLongMixin(BaseModel):
     """단기 기간은 장기 기간보다 짧아야 한다.
@@ -27,8 +57,8 @@ class _ShortBelowLongMixin(BaseModel):
     같은 기간(`==`)도 막는다 — 단기선과 장기선이 겹쳐 교차가 정의되지 않는다.
     """
 
-    short_period: int = Field(gt=0)
-    long_period: int = Field(gt=0)
+    short_period: int = _period()
+    long_period: int = _period()
 
     @model_validator(mode="after")
     def validate_short_below_long(self) -> "_ShortBelowLongMixin":
@@ -54,17 +84,17 @@ class RsiTrendParams(BaseModel):
     """추세추종 × RSI: 기준선(기본50) 돌파."""
 
     interval: Interval
-    period: int = Field(default=14, gt=0)
-    threshold: float = Field(default=50, ge=0, le=100)
+    period: int = _period(14)
+    threshold: float = _rsi_level(50)
 
 
 class RsiCounterTrendParams(BaseModel):
     """역추세 × RSI: 과매도(기본30)·과매수(기본70)."""
 
     interval: Interval
-    period: int = Field(default=14, gt=0)
-    oversold: float = Field(default=30, ge=0, le=100)
-    overbought: float = Field(default=70, ge=0, le=100)
+    period: int = _period(14)
+    oversold: float = _rsi_level(30)
+    overbought: float = _rsi_level(70)
 
     # 신호 로직은 "RSI ≤ 과매도면 매수"를 먼저 본다(signals.evaluate_counter_trend_rsi). 뒤집으면
     # (과매도 70 / 과매수 30) RSI 70 이하 **전 구간이 매수**가 되어 관망 구간이 사라진다 —
@@ -80,9 +110,9 @@ class MacdParams(BaseModel):
     """MACD — 추세추종/역추세 공통 파라미터 구성 (신호 로직만 signals.py에서 갈라진다)."""
 
     interval: Interval
-    short_period: int = Field(default=12, gt=0)
-    long_period: int = Field(default=26, gt=0)
-    signal_period: int = Field(default=9, gt=0)
+    short_period: int = _period(12)
+    long_period: int = _period(26)
+    signal_period: int = _period(9)
 
     # 기본값이 있어 한쪽만 보내는 요청이 가능하다 — 보낸 쪽과 기본값이 뒤집히는 경우도 막는다
     # (예: short_period=30만 보내면 long 기본값 26보다 길다). MA와 같은 이유다.
@@ -90,6 +120,12 @@ class MacdParams(BaseModel):
     def validate_short_below_long(self) -> "MacdParams":
         if self.short_period >= self.long_period:
             raise ValueError("단기 기간은 장기 기간보다 짧아야 합니다.")
+        # 시그널선은 장기 EMA가 데워진 뒤 그 위에서 다시 데워진다. 각 기간이 상한 안이어도 합이
+        # 확정봉 수를 넘으면 워커에서 시그널이 영원히 정의되지 않는다 (모듈 상단 주석 참고).
+        if self.long_period + self.signal_period > MACD_MAX_WINDOW:
+            raise ValueError(
+                f"장기 기간과 시그널 기간의 합은 {MACD_MAX_WINDOW} 이하여야 합니다."
+            )
         return self
 
 
@@ -97,8 +133,8 @@ class BollingerParams(BaseModel):
     """볼린저밴드 — 추세추종/역추세 공통 파라미터 구성."""
 
     interval: Interval
-    period: int = Field(default=20, gt=0)
-    std_multiplier: float = Field(default=2.0, gt=0)
+    period: int = _period(20)
+    std_multiplier: float = Field(default=2.0, gt=0, le=MAX_STD_MULTIPLIER)
 
 
 class GridParams(BaseModel):
@@ -220,7 +256,22 @@ def params_error_message(error: ValidationError, default: str) -> str:
     for detail in error.errors():
         if detail["type"] == "value_error":
             return str(detail["ctx"]["error"])
+    # 범위 위반은 필드에 맞는 문구로 — 기간을 1로 넣은 사용자에게 "기준값은 0~100 사이"는 엉뚱하다.
+    # RSI 기준선 같은 나머지는 문서(07 6장)가 정한 기본 문구를 그대로 쓴다.
+    for detail in error.errors():
+        field = detail["loc"][0] if detail["loc"] else None
+        if field in _FIELD_RANGE_MESSAGES:
+            return _FIELD_RANGE_MESSAGES[field]
     return default
+
+
+_FIELD_RANGE_MESSAGES = {
+    "short_period": PERIOD_RANGE_MESSAGE,
+    "long_period": PERIOD_RANGE_MESSAGE,
+    "period": PERIOD_RANGE_MESSAGE,
+    "signal_period": PERIOD_RANGE_MESSAGE,
+    "std_multiplier": STD_RANGE_MESSAGE,
+}
 
 
 def validate_params_for(strategy_type: str, indicator: str | None, params: dict) -> dict:
