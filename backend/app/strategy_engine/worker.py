@@ -89,6 +89,8 @@ SKIP_ACCOUNT_SUSPENDED = "suspended"
 # 재조정 대상이다 (03-worker-orchestration.md 2.4절).
 _shards: "leader.ShardLocks | None" = None
 _owned_shards: set[int] = set()
+# tick 하나 동안만 사는 확정봉 캐시 — `_confirmed_candles` 참고. tick 밖에서는 None이다.
+_tick_candles: "dict[tuple[str, str], list[_CandlePoint]] | None" = None
 
 
 def _record_skip(reason: str, slot_id: int, detail: str = "") -> None:
@@ -170,7 +172,7 @@ def run_tick() -> None:
     (main.py의 coins 동기화 잡과 같은 방침). tick이 끝나면 소요 시간·예외·건너뛴 횟수를
     **샤드별로** worker_heartbeats에 남긴다 (확장판 00단계, docs-scale/06-observability.md).
     """
-    global _tick_skip_count, _owned_shards
+    global _tick_skip_count, _owned_shards, _tick_candles
     _tick_skip_count = 0
     started_at = datetime.now(timezone.utc)
     tick_start = time.monotonic()
@@ -224,19 +226,23 @@ def run_tick() -> None:
         for shard_id in tradable:
             stats.setdefault(shard_id, _ShardStats()).error_count += 1
 
-    for shard_id, slot_id in slots:
-        shard_stats = stats.setdefault(shard_id, _ShardStats())
-        shard_stats.item_count += 1
-        slot_start = time.monotonic()
-        skips_before = _tick_skip_count
-        try:
-            process_slot(slot_id)
-        except Exception:
-            logger.exception("자동매매 워커: 슬롯 %s 처리 실패", slot_id)
-            shard_stats.error_count += 1
-        finally:
-            shard_stats.duration_ms += int((time.monotonic() - slot_start) * 1000)
-            shard_stats.skip_count += _tick_skip_count - skips_before
+    _tick_candles = {}
+    try:
+        for shard_id, slot_id in slots:
+            shard_stats = stats.setdefault(shard_id, _ShardStats())
+            shard_stats.item_count += 1
+            slot_start = time.monotonic()
+            skips_before = _tick_skip_count
+            try:
+                process_slot(slot_id)
+            except Exception:
+                logger.exception("자동매매 워커: 슬롯 %s 처리 실패", slot_id)
+                shard_stats.error_count += 1
+            finally:
+                shard_stats.duration_ms += int((time.monotonic() - slot_start) * 1000)
+                shard_stats.skip_count += _tick_skip_count - skips_before
+    finally:
+        _tick_candles = None
 
     total_ms = int((time.monotonic() - tick_start) * 1000)
     if total_ms > TICK_INTERVAL_SECONDS * 1000:
@@ -442,16 +448,38 @@ def _ensure_grid_lines(slot: _SlotSnapshot) -> list[dict[str, Any]] | None:
     return lines
 
 
-def _try_signal(slot: _SlotSnapshot) -> None:
-    """새 확정봉이 있으면 그 봉으로 평가하고, 엔진이 낸 주문 의도를 순서대로 집행한다."""
-    interval = slot.params.get("interval", "1d")
+def _confirmed_candles(symbol: str, interval: str) -> list[_CandlePoint]:
+    """확정봉 목록. tick 안에서는 (코인, 봉 간격)마다 **한 번만** 읽는다.
+
+    예전에는 슬롯마다 매 tick 200개 가까운 봉을 DB에서 읽었다 — 그 직후 `claim_candle`이 "새 봉
+    없음"으로 대부분 돌려보내는데도. 실측에서 슬롯 처리 6.3ms 중 6.1ms가 이 조회였고, 워커
+    하나가 슬롯 1,300개쯤에서 10초 예산을 넘긴 원인이었다. 슬롯은 수천 개여도 (코인, 간격) 조합은
+    수십 개라, 같은 봉을 슬롯 수만큼 되풀이해 읽고 있었다.
+
+    캐시는 tick 하나 동안만 산다(`run_tick`이 열고 닫는다). tick 밖에서 부르면 매번 새로 읽는다
+    — 다음 tick까지 낡은 봉을 들고 있으면 새 확정봉을 놓친다. tick 도중에 봉 경계가 지나가면
+    tick 뒤쪽 슬롯이 그 봉을 다음 tick(10초 뒤)에 보게 되는데, 슬롯 순서에 따라 원래도 생기던
+    지연이고 `claim_candle`이 같은 봉을 두 번 평가하지 않게 막는다.
+    """
+    key = (symbol, interval)
+    if _tick_candles is not None and key in _tick_candles:
+        return _tick_candles[key]
     with session_scope() as db:
         candles = [
             _CandlePoint(opened_at=candle.opened_at, close=candle.close)
             for candle in candles_service.get_confirmed_candles(
-                db, slot.coin_symbol, interval, fetch_if_missing=False
+                db, symbol, interval, fetch_if_missing=False
             )
         ]
+    if _tick_candles is not None:
+        _tick_candles[key] = candles
+    return candles
+
+
+def _try_signal(slot: _SlotSnapshot) -> None:
+    """새 확정봉이 있으면 그 봉으로 평가하고, 엔진이 낸 주문 의도를 순서대로 집행한다."""
+    interval = slot.params.get("interval", "1d")
+    candles = _confirmed_candles(slot.coin_symbol, interval)
     if len(candles) < 2:
         # **여기서 Upbit를 부르지 않는다** (확장판 6단계, 03-worker-orchestration.md 5.1절).
         # 캐시 미스가 곧 블로킹 HTTP였고, 봉 경계 직후에는 활성 조합 수만큼 그 호출이
