@@ -42,6 +42,20 @@ _QUANTITY_STEP = Decimal("0.00000001")  # NUMERIC(28,8)
 _PRICE_STEP = Decimal("0.00000001")  # NUMERIC(20,8)
 
 
+def already_evaluated(state: dict[str, Any] | None, candle_opened_at: datetime) -> bool:
+    """이 봉(또는 더 최신 봉)을 이미 평가했다고 state가 말하는가 — `claim_candle`의 사전 검사.
+
+    True일 때만 의미가 있다: 그러면 `claim_candle`도 반드시 실패하므로(같은 조건을 DB에서 본다)
+    부르지 않아도 된다. False는 "모른다"이고 판정은 `claim_candle`이 한다 — state는 tick 시작에
+    읽은 스냅샷이라, 그사이 다른 프로세스가 선점했을 수 있다. 그래서 이 함수로 평가를 **허락**하는
+    일은 없고, 오직 확실히 헛걸음인 UPDATE·커밋만 건너뛴다.
+    """
+    raw = (state or {}).get("last_evaluated_candle_at")
+    if not raw:
+        return False
+    return datetime.fromisoformat(raw) >= candle_opened_at
+
+
 def read_position(state: dict[str, Any] | None) -> dict[str, Any] | None:
     """state.position을 꺼낸다. 수량이 0 이하면 포지션이 없는 것으로 본다."""
     if not state:

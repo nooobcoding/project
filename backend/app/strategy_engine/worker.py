@@ -494,6 +494,13 @@ def _try_signal(slot: _SlotSnapshot) -> None:
     if slot.strategy_type == "grid" and _ensure_grid_lines(slot) is None:
         return
 
+    # 새 봉이 없는 tick이 대부분이다(1분봉도 10초 tick 여섯 번에 한 번). 그때마다 claim_candle의
+    # UPDATE·커밋을 치면 슬롯 수만큼 헛된 트랜잭션이 나간다 — 캔들 캐시 뒤에 남은 tick 비용의
+    # 대부분이 이것이었다. 스냅샷이 "이미 평가함"이라고 하면 claim도 반드시 실패하므로 건너뛴다.
+    # 반대 방향(평가 허락)은 여전히 claim_candle만 판정한다 (slot_state.already_evaluated).
+    if slot_state.already_evaluated(slot.state, candles[-1].opened_at):
+        return
+
     # 봉 선점을 주문보다 "먼저" 커밋한다 — 주문 도중 실패해도 같은 봉으로 다시 진입하지
     # 않게 하기 위함이다(그 봉은 건너뛰고 다음 신호에서 재시도, 07-auto-trading.md 2.1절).
     with session_scope() as db:

@@ -113,3 +113,43 @@ def test_outside_a_tick_every_call_reads_fresh(make_user, test_coin, candle_feed
     worker.process_slot(slot_id)
 
     assert candle_feed["calls"] == 2
+
+
+# ---------------------------------------------------------------- claim_candle 사전 검사
+
+
+def test_no_claim_transaction_when_the_snapshot_already_saw_this_candle(
+    make_user, test_coin, candle_feed, all_shards, monkeypatch
+):
+    """새 봉이 없는 tick에는 claim_candle의 UPDATE·커밋을 치지 않는다.
+
+    대부분의 tick이 이 경우다. 캔들 캐시 뒤에 남은 tick 비용의 대부분이 이 헛된 트랜잭션이었다.
+    """
+    from app.services import slot_state
+
+    calls = []
+    real_claim = slot_state.claim_candle
+    monkeypatch.setattr(
+        slot_state, "claim_candle", lambda db, sid, at: calls.append(sid) or real_claim(db, sid, at)
+    )
+    slot_id = _active_slot(make_user(), test_coin)
+
+    worker.run_tick()  # 첫 봉 — 선점해야 한다
+    worker.run_tick()  # 같은 봉 — 스냅샷이 이미 평가했다고 말한다
+    assert calls == [slot_id]
+
+    candle_feed["count"] = 6  # 새 봉
+    worker.run_tick()
+    assert calls == [slot_id, slot_id]
+
+
+def test_already_evaluated_only_ever_says_skip_when_certain():
+    """False는 '모른다'다 — 평가를 허락하는 판정은 언제나 claim_candle이 한다."""
+    from app.services.slot_state import already_evaluated
+
+    t = START + timedelta(days=3)
+    assert already_evaluated(None, t) is False
+    assert already_evaluated({}, t) is False
+    assert already_evaluated({"last_evaluated_candle_at": (t - timedelta(days=1)).isoformat()}, t) is False
+    assert already_evaluated({"last_evaluated_candle_at": t.isoformat()}, t) is True
+    assert already_evaluated({"last_evaluated_candle_at": (t + timedelta(days=1)).isoformat()}, t) is True
