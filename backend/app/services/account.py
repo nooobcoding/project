@@ -3,6 +3,7 @@
 from sqlalchemy.orm import Session
 
 from app.models import User
+from app.services.admin import ensure_not_last_admin
 from app.services.auth import hash_password, verify_password
 
 
@@ -26,6 +27,11 @@ def change_password(db: Session, user: User, current_password: str, new_password
 
 
 def delete_account(db: Session, user: User) -> None:
-    """01-erd.md 3.4절 삭제 정책 — users 행 삭제, 하위 전 테이블 ON DELETE CASCADE로 함께 삭제."""
+    """01-erd.md 3.4절 삭제 정책 — users 행 삭제, 하위 전 테이블 ON DELETE CASCADE로 함께 삭제.
+
+    마지막 관리자는 탈퇴할 수 없다 — 탈퇴는 권한 회수와 결과가 같으므로 같은 규칙을 적용한다
+    (확장판 05-admin.md 5장). 이 사람이 남긴 감사 로그는 actor_user_id만 NULL이 되고 남는다.
+    """
+    ensure_not_last_admin(db, user)
     db.delete(user)
     db.commit()

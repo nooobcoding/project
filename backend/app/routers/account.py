@@ -12,6 +12,7 @@ from app.services.account import (
     change_password,
     delete_account,
 )
+from app.services.admin import LastAdminError
 from app.services.auth import get_current_user
 
 router = APIRouter(prefix="/api/account", tags=["account"])
@@ -49,4 +50,10 @@ def delete_my_account(
     db: Session = Depends(get_session),
     current_user=Depends(get_current_user),
 ) -> None:
-    delete_account(db, current_user)
+    try:
+        delete_account(db, current_user)
+    except LastAdminError:
+        db.rollback()
+        raise HTTPException(
+            status_code=http_status.HTTP_409_CONFLICT, detail="관리자가 최소 1명은 있어야 합니다."
+        )

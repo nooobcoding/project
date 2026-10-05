@@ -50,6 +50,21 @@ def record_audit(
     )
 
 
+def ensure_not_last_admin(db: Session, user: User) -> None:
+    """`user`가 관리자에서 빠지면 관리자가 0명이 되는지 본다 — 권한 회수와 관리자 탈퇴가 공유한다.
+
+    관리자 행을 전부 `FOR UPDATE`로 잡고 센다. 잠그지 않으면 관리자 둘이 동시에 서로를
+    회수(또는 둘 다 탈퇴)할 때 각자 "나 말고 한 명 더 있다"를 보고 통과해 0명이 된다.
+    """
+    if user.role != ROLE_ADMIN:
+        return
+    admin_ids = db.execute(
+        select(User.id).where(User.role == ROLE_ADMIN).with_for_update()
+    ).scalars().all()
+    if len(admin_ids) <= 1:
+        raise LastAdminError()
+
+
 def set_role(db: Session, email: str, role: str) -> User:
     """관리자 권한을 부여하거나 회수한다 — CLI 전용 (05 2.1절 "화면에서 승격하는 경로는 두지 않는다").
 
@@ -66,11 +81,7 @@ def set_role(db: Session, email: str, role: str) -> User:
         return user  # 멱등
 
     if role == ROLE_USER:
-        admin_ids = db.execute(
-            select(User.id).where(User.role == ROLE_ADMIN).with_for_update()
-        ).scalars().all()
-        if len(admin_ids) <= 1:
-            raise LastAdminError()
+        ensure_not_last_admin(db, user)
 
     before = user.role
     user.role = role
@@ -426,3 +437,38 @@ def get_system_overview(db: Session) -> dict:
         ) or 0,
         "upbit_rate_limit": rate_limit.peek(),
     }
+
+
+# ---------------------------------------------------------------- 4장. 감사 로그 조회
+
+
+def list_audit_logs(
+    db: Session,
+    *,
+    action: str | None,
+    actor_user_id: int | None,
+    target_type: str | None,
+    target_id: int | None,
+    page: int,
+    page_size: int,
+) -> tuple[list[AuditLog], int]:
+    """최신순. `(created_at DESC)`·`(actor_user_id, created_at DESC)` 인덱스를 탄다."""
+    conditions = []
+    if action is not None:
+        conditions.append(AuditLog.action == action)
+    if actor_user_id is not None:
+        conditions.append(AuditLog.actor_user_id == actor_user_id)
+    if target_type is not None:
+        conditions.append(AuditLog.target_type == target_type)
+    if target_id is not None:
+        conditions.append(AuditLog.target_id == target_id)
+
+    total = db.scalar(select(func.count()).select_from(AuditLog).where(*conditions)) or 0
+    items = db.scalars(
+        select(AuditLog)
+        .where(*conditions)
+        .order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    ).all()
+    return list(items), total

@@ -25,6 +25,8 @@ from app.schemas.admin import (
     AdminUserStatusRequest,
     AdminUserStatusResponse,
     AdminUserSummary,
+    AuditLogItem,
+    AuditLogListResponse,
     SystemOverviewResponse,
 )
 from app.schemas.strategy_slots import StrategySlotResponse
@@ -135,3 +137,28 @@ def deactivate_slot(
 @router.get("/system", response_model=SystemOverviewResponse)
 def get_system(db: Session = Depends(get_session)) -> SystemOverviewResponse:
     return SystemOverviewResponse(**admin_service.get_system_overview(db))
+
+
+@router.get("/audit-logs", response_model=AuditLogListResponse)
+def list_audit_logs(
+    action: str | None = Query(default=None, max_length=40),
+    actor_user_id: int | None = None,
+    target_type: str | None = Query(default=None, max_length=20),
+    target_id: int | None = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=admin_service.MAX_PAGE_SIZE),
+    db: Session = Depends(get_session),
+) -> AuditLogListResponse:
+    items, total = admin_service.list_audit_logs(
+        db,
+        action=action,
+        actor_user_id=actor_user_id,
+        target_type=target_type,
+        target_id=target_id,
+        page=page,
+        page_size=page_size,
+    )
+    return AuditLogListResponse(
+        items=[AuditLogItem.model_validate(item, from_attributes=True) for item in items],
+        total=total,
+    )

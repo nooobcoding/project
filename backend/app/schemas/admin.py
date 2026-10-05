@@ -105,3 +105,19 @@ class SystemOverviewResponse(BaseModel):
     active_slots: int
     pending_orders: int
     upbit_rate_limit: RateLimitStatus | None  # None = Redis 조회 실패
+
+
+class AuditLogItem(BaseModel):
+    id: int
+    actor_user_id: int | None  # 행위자가 탈퇴했거나 CLI 작업이면 None
+    actor_email: str | None
+    action: str
+    target_type: str
+    target_id: int
+    detail: dict | None
+    created_at: datetime
+
+
+class AuditLogListResponse(BaseModel):
+    items: list[AuditLogItem]
+    total: int
