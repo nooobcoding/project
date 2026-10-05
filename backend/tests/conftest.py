@@ -156,6 +156,14 @@ def make_user(test_coin):
                 db.execute(
                     text(f"DELETE FROM {table} WHERE user_id = :user_id"), {"user_id": user_id}
                 )
+            # 감사 로그는 대상이 탈퇴해도 남는 게 정상 동작이라 FK로 안 지워진다 — 테스트 유저 것만 치운다.
+            db.execute(
+                text(
+                    "DELETE FROM audit_logs WHERE actor_user_id = :user_id"
+                    " OR (target_type = 'user' AND target_id = :user_id)"
+                ),
+                {"user_id": user_id},
+            )
             db.execute(text("DELETE FROM users WHERE id = :user_id"), {"user_id": user_id})
 
 

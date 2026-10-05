@@ -1,3 +1,4 @@
+from app.models.audit_log import AuditLog
 from app.models.backtest_result import BacktestResult
 from app.models.backtest_trade import BacktestTrade
 from app.models.balance import Balance
@@ -15,6 +16,7 @@ from app.models.watchlist import Watchlist
 from app.models.worker_heartbeat import WorkerHeartbeat
 
 __all__ = [
+    "AuditLog",
     "BacktestResult",
     "BacktestTrade",
     "Balance",
