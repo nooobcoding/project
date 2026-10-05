@@ -1,0 +1,101 @@
+# 여러 프로세스 구성 — 같은 이미지를 역할(PROCESS_ROLES)만 바꿔 띄운다 (docs-scale/00-architecture.md 2장).
+#
+# 기본 docker-compose.yml은 backend 하나에 전 역할을 켠 단일 프로세스다. 이 파일을 겹쳐 쓰면
+# 그 backend를 끄고 역할별 서비스로 나눈다:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.scale.yml up -d --build \
+#       --scale worker=4 --scale matcher=2
+#
+# 단일 구성으로 돌아가기:
+#   docker compose -f docker-compose.yml -f docker-compose.scale.yml down
+#   docker compose up -d
+#
+# 늘릴 수 있는 것과 없는 것:
+#   - worker·matcher: --scale로 늘린다. 샤드를 프로세스끼리 고르게 나눠 갖는다(공정 몫).
+#     SHARD_COUNT(16)가 상한이라 17개째부터는 놀게 된다.
+#   - api: 컨테이너 하나에 uvicorn 프로세스 API_WORKERS개. 포트 하나를 여러 컨테이너가 나눠
+#     쓰려면 로드밸런서가 필요한데 그건 비목표다(00-architecture.md 4장).
+#   - market-data·scheduler: 리더 선출이라 늘려도 하나만 일하고 나머지는 대기(페일오버용).
+
+x-backend: &backend
+  build: ./backend
+  # 측정·운영용이라 --reload를 끈다 (기본 compose의 개발 서버는 파일 감시 때문에 느리다)
+  command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  volumes:
+    - ./backend/app:/app/app
+    - ./backend/migrations:/app/migrations
+
+x-backend-env: &backend-env
+  DATABASE_URL: postgresql+psycopg2://coin_autotrading:coin_autotrading@postgres:5432/coin_autotrading
+  JWT_SECRET_KEY: dev-secret-change-me
+  REDIS_URL: redis://redis:6379/0
+  # 프로세스가 갈리면 시세·pending_symbols·토큰 버킷을 Redis로 공유해야 한다
+  PRICE_CACHE_BACKEND: redis
+  RUN_MIGRATIONS: "0"
+  # 커넥션 예산: 프로세스 수 × (풀 + 초과) + 역할별 락 전용 커넥션 < max_connections
+  DB_POOL_SIZE: "3"
+  DB_MAX_OVERFLOW: "5"
+
+services:
+  postgres:
+    # 기본 100은 프로세스를 나누면 금방 찬다. 실측 피크는 docs-scale/08-capacity.md
+    command: ["postgres", "-c", "max_connections=300"]
+
+  # 단일 구성의 전 역할 backend는 끈다 — 같이 뜨면 샤드·리더를 먼저 다 쥔다
+  backend:
+    profiles: ["single"]
+
+  api:
+    <<: *backend
+    command:
+      ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers ${API_WORKERS:-4}"]
+    environment:
+      <<: *backend-env
+      PROCESS_ROLES: api
+      RUN_MIGRATIONS: "1" # 마이그레이션은 여기서만
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+
+  market-data:
+    <<: *backend
+    environment:
+      <<: *backend-env
+      PROCESS_ROLES: market-data
+    depends_on: &after-api
+      api:
+        condition: service_healthy
+
+  scheduler:
+    <<: *backend
+    environment:
+      <<: *backend-env
+      PROCESS_ROLES: scheduler
+    depends_on: *after-api
+
+  matcher:
+    <<: *backend
+    environment:
+      <<: *backend-env
+      PROCESS_ROLES: matcher
+    depends_on: *after-api
+
+  worker:
+    <<: *backend
+    environment:
+      <<: *backend-env
+      PROCESS_ROLES: worker
+    depends_on: *after-api
+
+  frontend:
+    depends_on: !override
+      - api

@@ -21,6 +21,12 @@ class Settings(BaseSettings):
     """
 
     database_url: str = "postgresql+psycopg2://localhost:5432/coin_autotrading"
+    # 프로세스당 커넥션 풀 (확장판 00-architecture.md 3.5절). 기본값은 SQLAlchemy 기본(5 + 10)
+    # 그대로라 단일 구성은 동작이 같다. 여러 프로세스로 나누면 "프로세스 수 × (풀 + 초과)"가
+    # PostgreSQL max_connections를 넘지 않게 역할별로 줄인다 (docker-compose.scale.yml).
+    # 리더·샤드 락의 전용 커넥션은 NullPool이라 이 값과 별개로 역할당 1~2개가 더 든다.
+    db_pool_size: int = 5
+    db_max_overflow: int = 10
     # 기본값을 두지 않는다 — 소스코드에 박힌 기본 시크릿은 공개 저장소에서 그대로
     # 노출되므로, 값을 실제로 설정하지 않으면 서버가 기동 자체를 못 하게 막는다.
     jwt_secret_key: str

@@ -22,7 +22,11 @@ _pool_peak_checked_out = 0
 @lru_cache
 def get_engine():
     """DB 엔진을 최초 호출 시점에 생성해 캐싱한다."""
-    engine = create_engine(settings.database_url)
+    engine = create_engine(
+        settings.database_url,
+        pool_size=settings.db_pool_size,
+        max_overflow=settings.db_max_overflow,
+    )
     pool = engine.pool
 
     def _track_checkout(dbapi_connection, connection_record, connection_proxy) -> None:
