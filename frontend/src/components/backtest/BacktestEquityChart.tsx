@@ -11,6 +11,7 @@ import {
   type UTCTimestamp,
 } from "lightweight-charts";
 import type { BacktestTradeOut, EquityPointOut } from "../../types/backtest";
+import { kstLocalization, kstTickMarkFormatter } from "../chartTime";
 
 // 매수(빨강)/매도(파랑) — 06-backtesting.md 3-B절. dashboard-trade-badge(.is-buy/.is-sell)와
 // 같은 색으로 맞춘다(이 화면 전체의 매수·매도 색 관례).
@@ -48,7 +49,8 @@ export function BacktestEquityChart({ equityCurve, trades, onSelectTrades }: Bac
     const chart = createChart(container, {
       layout: { background: { color: "transparent" }, textColor: "#9a9a96" },
       grid: { vertLines: { color: "#3d3d3a" }, horzLines: { color: "#3d3d3a" } },
-      timeScale: { timeVisible: true, secondsVisible: false },
+      localization: kstLocalization,
+      timeScale: { timeVisible: true, secondsVisible: false, tickMarkFormatter: kstTickMarkFormatter },
       height: 320,
     });
 

@@ -9,6 +9,7 @@ import {
   type UTCTimestamp,
 } from "lightweight-charts";
 import { getCandles } from "../../api/candles";
+import { kstLocalization, kstTickMarkFormatter } from "../chartTime";
 import { useAuth } from "../../hooks/useAuth";
 import type { CandleInterval } from "../../types/candles";
 import type { PriceTick } from "../../types/dashboard";
@@ -57,7 +58,8 @@ export function CandleChart({ symbol, tick, interval }: CandleChartProps) {
     const chart = createChart(container, {
       layout: { background: { color: "transparent" }, textColor: "#9a9a96" },
       grid: { vertLines: { color: "#3d3d3a" }, horzLines: { color: "#3d3d3a" } },
-      timeScale: { timeVisible: true, secondsVisible: false },
+      localization: kstLocalization,
+      timeScale: { timeVisible: true, secondsVisible: false, tickMarkFormatter: kstTickMarkFormatter },
       height: 320,
     });
 
