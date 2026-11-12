@@ -12,6 +12,7 @@ vite.config.d.ts
 
 # Env
 .env
+.env.prod
 *.log
 
 # Editor

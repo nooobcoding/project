@@ -1,0 +1,80 @@
+# 운영(전시) 배포용 구성 — 서버 한 대에 단일 프로세스로 띄운다. 사용법은 docs/deploy.md.
+#
+# docker-compose.yml(개발용)에 덧씌우는 파일이 아니라 **단독으로** 쓴다:
+#   docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build
+# 덧씌우면 개발용의 ports(5432·6379·8000·5173)와 소스 마운트가 그대로 따라와 외부에 열린다.
+# 프로젝트 이름도 따로 둬서(name) 개발용 컨테이너·볼륨과 섞이지 않게 한다 — 같은 프로젝트로
+# 섞이면 postgres 설정 차이 때문에 컨테이너가 재생성된다(CLAUDE.md 함정 참고).
+name: coin-prod
+
+x-logging: &logging
+  # 기본 json-file 로그는 크기 제한이 없어 오래 띄우면 디스크를 채운다.
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    # ports 없음 — backend만 내부 네트워크로 붙는다.
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    logging: *logging
+
+  backend:
+    build: ./backend
+    # --reload 없음, 워커 1개. 단일 프로세스 구성은 시세 캐시(PRICE_CACHE_BACKEND=memory)와
+    # 스케줄러가 프로세스 안에 있어서 --workers로 늘리면 프로세스마다 따로 돌아 어긋난다.
+    # --proxy-headers: Caddy 뒤에서 실제 접속자 IP·https 여부를 받는다. backend 포트는
+    # 밖에 안 열려 있어 Caddy만 이 헤더를 보낼 수 있으므로 모든 IP를 믿어도 된다.
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000",
+              "--proxy-headers", "--forwarded-allow-ips", "*"]
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?JWT_SECRET_KEY를 .env.prod에 설정할 것}
+      CORS_ALLOWED_ORIGINS: https://${DOMAIN}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    logging: *logging
+
+  web:
+    # 프론트를 빌드해 Caddy 이미지에 넣는다. VITE_API_BASE_URL은 **빌드할 때** 번들에 박히므로
+    # DOMAIN을 바꾸면 web을 다시 빌드해야 한다(--build).
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.prod
+      args:
+        VITE_API_BASE_URL: https://${DOMAIN}
+    environment:
+      DOMAIN: ${DOMAIN:?DOMAIN을 .env.prod에 설정할 것}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"   # HTTP/3
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # 발급받은 인증서. 지우면 재발급하는데 Let's Encrypt 발급 횟수 제한에 걸릴 수 있다.
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - backend
+    restart: unless-stopped
+    logging: *logging
+
+volumes:
+  postgres_data:
+  caddy_data:
+  caddy_config:

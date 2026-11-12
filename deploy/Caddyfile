@@ -1,0 +1,26 @@
+# 운영 진입점 — HTTPS 인증서 자동 발급, API·웹소켓은 backend로, 나머지는 프론트 정적 파일.
+# DOMAIN은 docker-compose.prod.yml이 .env.prod에서 넘겨준다.
+
+{$DOMAIN} {
+	encode zstd gzip
+
+	# 백엔드 경로. 웹소켓(/ws/prices, /ws/orderbook/*)도 reverse_proxy가 그대로 업그레이드한다.
+	# handle로 감싸는 이유: 아래 try_files는 없는 경로를 전부 /index.html로 바꾸므로, 같은
+	# 블록에 두면 /api 요청까지 index.html로 바뀐다.
+	@backend path /api/* /ws/* /health /docs /openapi.json
+	handle @backend {
+		reverse_proxy backend:8000
+	}
+
+	handle {
+		root * /srv
+		# BrowserRouter라 /trade 같은 주소로 새로고침하면 그 파일이 없다 → index.html로 보낸다.
+		try_files {path} /index.html
+		# vite 빌드 산출물(assets/)은 파일명에 해시가 붙어 내용이 바뀌면 이름도 바뀐다.
+		# index.html은 배포할 때마다 바뀌므로 캐시하지 않는다.
+		@hashed path /assets/*
+		header @hashed Cache-Control "public, max-age=31536000, immutable"
+		header /index.html Cache-Control "no-cache"
+		file_server
+	}
+}

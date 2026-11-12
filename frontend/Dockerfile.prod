@@ -1,0 +1,16 @@
+# 운영용 — 프론트를 빌드해 Caddy에 정적 파일로 넣는다 (docker-compose.prod.yml의 web).
+# 개발용 Dockerfile은 vite 개발 서버를 띄운다.
+
+FROM node:20-alpine AS build
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+# vite는 VITE_ 접두사 환경변수를 빌드 시점에 번들에 박는다. 웹소켓 주소도 이 값에서
+# http→ws로 바꿔 만들므로 https://로 주면 wss://가 된다 (hooks/usePriceStream.ts).
+ARG VITE_API_BASE_URL
+ENV VITE_API_BASE_URL=${VITE_API_BASE_URL}
+RUN npm run build
+
+FROM caddy:2.10-alpine
+COPY --from=build /app/dist /srv
