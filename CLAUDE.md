@@ -11,6 +11,7 @@ FastAPI + SQLAlchemy + PostgreSQL + Redis 백엔드, React + Vite 프론트엔�
 | `docs/00-overview.md`, `docs/01-erd.md` | 전체 구조, 스키마의 **단일 기준** |
 | `docs/02-coding-conventions.md` | 작명·주석·커밋·브랜치 규칙 (**먼저 읽을 것**) |
 | `docs/features/` | 기능별 설계 (01 인증 … 09 체결 엔진) |
+| `docs/deploy.md` | 운영(전시) 배포 — 오라클 서버 한 대, `docker-compose.prod.yml` + Caddy |
 | `docs-scale/docs-scale/` | **확장판** — 여러 프로세스로 나누는 설계. 00 아키텍처, 03 워커 샤딩, 05 관리자, 07 로드맵, 08 실측 처리 한계 |
 
 ## 커밋과 브랜치
