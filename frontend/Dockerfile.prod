@@ -12,5 +12,11 @@ ARG VITE_API_BASE_URL
 ENV VITE_API_BASE_URL=${VITE_API_BASE_URL}
 RUN npm run build
 
+# 기본 Caddy에는 요청 횟수 제한이 없어 플러그인을 넣어 다시 빌드한다 (deploy/Caddyfile rate_limit).
+# 정식 태그가 v0.1.0 하나뿐이라 그 버전으로 고정한다.
+FROM caddy:2.10-builder-alpine AS caddy
+RUN xcaddy build --with github.com/mholt/caddy-ratelimit@v0.1.0
+
 FROM caddy:2.10-alpine
+COPY --from=caddy /usr/bin/caddy /usr/bin/caddy
 COPY --from=build /app/dist /srv

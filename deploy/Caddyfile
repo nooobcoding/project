@@ -1,8 +1,37 @@
 # 운영 진입점 — HTTPS 인증서 자동 발급, API·웹소켓은 backend로, 나머지는 프론트 정적 파일.
 # DOMAIN은 docker-compose.prod.yml이 .env.prod에서 넘겨준다.
 
+{
+	# rate_limit은 플러그인 지시어라 기본 실행 순서에 없다. `before reverse_proxy`로 두면
+	# 안 된다 — 기본 순서에서 handle이 reverse_proxy보다 앞이라, 아래 handle @backend가 먼저
+	# 요청을 받아 끝내 버려 제한이 한 번도 안 걸린다(실제로 그랬다). handle보다 앞에 둔다.
+	order rate_limit before basic_auth
+}
+
 {$DOMAIN} {
 	encode zstd gzip
+
+	# 로그인·가입 요청 횟수 제한 (IP 기준). 앱에는 이 제한이 없다 — 공개 서버에서 비밀번호
+	# 대입과 가입 폭주를 입구에서 막는다. 전시장처럼 여러 사람이 한 공유기(같은 공인 IP)로
+	# 들어오는 경우를 생각해 값을 넉넉히 잡았다. 막히면 아래 handle_errors가 JSON으로 답한다.
+	rate_limit {
+		zone login {
+			match {
+				path /api/auth/login
+			}
+			key {remote_host}
+			events 30
+			window 1m
+		}
+		zone register {
+			match {
+				path /api/auth/register
+			}
+			key {remote_host}
+			events 30
+			window 10m
+		}
+	}
 
 	# 백엔드 경로. 웹소켓(/ws/prices, /ws/orderbook/*)도 reverse_proxy가 그대로 업그레이드한다.
 	# handle로 감싸는 이유: 아래 try_files는 없는 경로를 전부 /index.html로 바꾸므로, 같은
@@ -14,7 +43,7 @@
 
 	handle {
 		root * /srv
-		# BrowserRouter라 /trade 같은 주소로 새로고침하면 그 파일이 없다 → index.html로 보낸다.
+		# BrowserRouter라 /trade 같은 주소로 새로 고침하면 그 파일이 없다 → index.html로 보낸다.
 		try_files {path} /index.html
 		# vite 빌드 산출물(assets/)은 파일명에 해시가 붙어 내용이 바뀌면 이름도 바뀐다.
 		# index.html은 배포할 때마다 바뀌므로 캐시하지 않는다.
@@ -22,5 +51,12 @@
 		header @hashed Cache-Control "public, max-age=31536000, immutable"
 		header /index.html Cache-Control "no-cache"
 		file_server
+	}
+
+	# 프론트(api/client.ts)는 본문이 JSON이 아니면 "서버와 연결할 수 없습니다"를 띄운다.
+	# 백엔드와 같은 {"detail": ...} 형태로 답해야 사용자가 원인을 안다.
+	handle_errors 429 {
+		header Content-Type "application/json; charset=utf-8"
+		respond `{"detail":"요청이 너무 많습니다. 잠시 후 다시 시도해주세요."}` 429
 	}
 }
